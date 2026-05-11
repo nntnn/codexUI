@@ -35,6 +35,19 @@ import { handleZenProxyRequest } from './zenProxy.js'
 import { handleCustomEndpointProxyRequest } from './customEndpointProxy.js'
 import { ThreadTerminalManager } from './terminalManager.js'
 import { sendJsonResponse } from './httpResponse.js'
+import {
+  clearLiveStatePayloadRuntime,
+  findCommandOutputInTurns,
+  getCompletedLiveStateCacheLimits,
+  getStoredCommandOutputBlock,
+  getThreadReadSnapshotCacheLimits,
+  invalidateLiveStateDigest,
+  jsonByteLength,
+  maybeSendFastLiveStateUnchanged,
+  prepareLiveStateResponse,
+  sendPreparedLiveStateResponse,
+  storeCommandOutputBlock,
+} from './liveStatePayload.js'
 import { getSpawnInvocation } from '../utils/commandInvocation.js'
 import {
   resolveCodexCommand,
@@ -4271,6 +4284,22 @@ type CapturedItem = {
   completed: boolean
 }
 
+type ThreadReadSnapshotCacheEntry = {
+  data: unknown
+  bytes: number
+  expiresAt: number
+}
+
+type LiveStateCacheEntry = {
+  data: unknown
+  turnCount: number
+  sessionSize: number
+  sessionMtimeMs: number
+  generation: number
+  bytes: number
+  expiresAt: number
+}
+
 const MERGEABLE_ITEM_TYPES = new Set([
   'commandExecution',
   'fileChange',
@@ -4288,9 +4317,10 @@ class AppServerProcess {
   private readonly pendingServerRequests = new Map<number, PendingServerRequest>()
   private readonly appServerArgs = buildAppServerArgs()
   private readonly streamEventsByThreadId = new Map<string, StreamEventFrame[]>()
-  private readonly lastThreadReadSnapshotByThreadId = new Map<string, unknown>()
+  private readonly lastThreadReadSnapshotByThreadId = new Map<string, ThreadReadSnapshotCacheEntry>()
   private readonly capturedItemsByThreadId = new Map<string, Map<string, CapturedItem>>()
-  private readonly liveStateCache = new Map<string, { data: unknown; turnCount: number; sessionSize: number }>()
+  private readonly liveStateCache = new Map<string, LiveStateCacheEntry>()
+  private readonly liveStateGenerationByThreadId = new Map<string, number>()
   private chatgptAuthRefreshPromise: Promise<ChatgptAuthTokensRefreshResponse> | null = null
 
 
@@ -4369,6 +4399,12 @@ class AppServerProcess {
 
       this.pending.clear()
       this.pendingServerRequests.clear()
+      this.streamEventsByThreadId.clear()
+      this.liveStateGenerationByThreadId.clear()
+      this.lastThreadReadSnapshotByThreadId.clear()
+      this.capturedItemsByThreadId.clear()
+      this.liveStateCache.clear()
+      clearLiveStatePayloadRuntime()
       this.process = null
       this.initialized = false
       this.initializePromise = null
@@ -4424,7 +4460,11 @@ class AppServerProcess {
     this.recordStreamEvent(notification)
     this.captureItemFromNotification(notification)
     const nThreadId = this.extractThreadIdFromParams(notification.params)
-    if (nThreadId) this.invalidateLiveStateCache(nThreadId)
+    if (nThreadId) {
+      this.bumpLiveStateGeneration(nThreadId)
+      this.invalidateLiveStateCache(nThreadId)
+      invalidateLiveStateDigest(nThreadId)
+    }
     for (const listener of this.notificationListeners) {
       listener(notification)
     }
@@ -4476,22 +4516,130 @@ class AppServerProcess {
     return buffer.slice(-limit)
   }
 
+  getLiveStateGeneration(threadId: string): number {
+    return this.liveStateGenerationByThreadId.get(threadId) ?? 0
+  }
+
+  private bumpLiveStateGeneration(threadId: string): void {
+    this.liveStateGenerationByThreadId.set(threadId, this.getLiveStateGeneration(threadId) + 1)
+  }
+
+  private getThreadReadSnapshotCacheBytes(): number {
+    let total = 0
+    for (const entry of this.lastThreadReadSnapshotByThreadId.values()) {
+      total += entry.bytes
+    }
+    return total
+  }
+
+  private pruneThreadReadSnapshots(): void {
+    const limits = getThreadReadSnapshotCacheLimits()
+    const now = Date.now()
+    for (const [key, entry] of this.lastThreadReadSnapshotByThreadId.entries()) {
+      if (entry.expiresAt <= now) this.lastThreadReadSnapshotByThreadId.delete(key)
+    }
+    while (
+      this.lastThreadReadSnapshotByThreadId.size > limits.maxEntries ||
+      this.getThreadReadSnapshotCacheBytes() > limits.maxBytes
+    ) {
+      const firstKey = this.lastThreadReadSnapshotByThreadId.keys().next().value
+      if (typeof firstKey !== 'string') break
+      this.lastThreadReadSnapshotByThreadId.delete(firstKey)
+    }
+  }
+
   storeThreadReadSnapshot(threadId: string, snapshot: unknown): void {
-    this.lastThreadReadSnapshotByThreadId.set(threadId, snapshot)
+    const limits = getThreadReadSnapshotCacheLimits()
+    const bytes = jsonByteLength(snapshot)
+    if (bytes < 0 || bytes > limits.maxBytes) {
+      this.lastThreadReadSnapshotByThreadId.delete(threadId)
+      return
+    }
+    this.lastThreadReadSnapshotByThreadId.delete(threadId)
+    this.lastThreadReadSnapshotByThreadId.set(threadId, {
+      data: snapshot,
+      bytes,
+      expiresAt: Date.now() + limits.ttlMs,
+    })
+    this.pruneThreadReadSnapshots()
   }
 
   getLastThreadReadSnapshot(threadId: string): unknown | null {
-    return this.lastThreadReadSnapshotByThreadId.get(threadId) ?? null
+    this.pruneThreadReadSnapshots()
+    const cached = this.lastThreadReadSnapshotByThreadId.get(threadId)
+    if (!cached) return null
+    if (cached.expiresAt <= Date.now()) {
+      this.lastThreadReadSnapshotByThreadId.delete(threadId)
+      return null
+    }
+    const limits = getThreadReadSnapshotCacheLimits()
+    const refreshed = { ...cached, expiresAt: Date.now() + limits.ttlMs }
+    this.lastThreadReadSnapshotByThreadId.delete(threadId)
+    this.lastThreadReadSnapshotByThreadId.set(threadId, refreshed)
+    return refreshed.data
   }
 
-  cacheLiveState(threadId: string, data: unknown, turnCount: number, sessionSize: number): void {
-    this.liveStateCache.set(threadId, { data, turnCount, sessionSize })
+  private getLiveStateCacheBytes(): number {
+    let total = 0
+    for (const entry of this.liveStateCache.values()) {
+      total += entry.bytes
+    }
+    return total
   }
 
-  getCachedLiveState(threadId: string, turnCount: number, sessionSize: number): unknown | null {
+  private pruneLiveStateCache(): void {
+    const limits = getCompletedLiveStateCacheLimits()
+    const now = Date.now()
+    for (const [key, entry] of this.liveStateCache.entries()) {
+      if (entry.expiresAt <= now) this.liveStateCache.delete(key)
+    }
+    while (
+      this.liveStateCache.size > limits.maxEntries ||
+      this.getLiveStateCacheBytes() > limits.maxBytes
+    ) {
+      const firstKey = this.liveStateCache.keys().next().value
+      if (typeof firstKey !== 'string') break
+      this.liveStateCache.delete(firstKey)
+    }
+  }
+
+  cacheLiveState(threadId: string, data: unknown, turnCount: number, sessionSize: number, sessionMtimeMs: number, generation: number): void {
+    const limits = getCompletedLiveStateCacheLimits()
+    const bytes = jsonByteLength(data)
+    if (bytes < 0 || bytes > limits.maxBytes) {
+      this.liveStateCache.delete(threadId)
+      return
+    }
+    this.liveStateCache.delete(threadId)
+    this.liveStateCache.set(threadId, {
+      data,
+      turnCount,
+      sessionSize,
+      sessionMtimeMs,
+      generation,
+      bytes,
+      expiresAt: Date.now() + limits.ttlMs,
+    })
+    this.pruneLiveStateCache()
+  }
+
+  getCachedLiveState(threadId: string, turnCount: number, sessionSize: number, sessionMtimeMs: number, generation: number): unknown | null {
+    this.pruneLiveStateCache()
     const cached = this.liveStateCache.get(threadId)
     if (!cached) return null
-    if (cached.turnCount !== turnCount || cached.sessionSize !== sessionSize) return null
+    if (
+      cached.turnCount !== turnCount ||
+      cached.sessionSize !== sessionSize ||
+      cached.sessionMtimeMs !== sessionMtimeMs ||
+      cached.generation !== generation
+    ) {
+      this.liveStateCache.delete(threadId)
+      return null
+    }
+    const limits = getCompletedLiveStateCacheLimits()
+    const refreshed = { ...cached, expiresAt: Date.now() + limits.ttlMs }
+    this.liveStateCache.delete(threadId)
+    this.liveStateCache.set(threadId, refreshed)
     return cached.data
   }
 
@@ -4771,6 +4919,12 @@ class AppServerProcess {
   }
 
   dispose(): void {
+    this.streamEventsByThreadId.clear()
+    this.liveStateGenerationByThreadId.clear()
+    this.lastThreadReadSnapshotByThreadId.clear()
+    this.capturedItemsByThreadId.clear()
+    this.liveStateCache.clear()
+    clearLiveStatePayloadRuntime()
     if (!this.process) return
 
     const proc = this.process
@@ -5813,6 +5967,65 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         return
       }
 
+      if (req.method === 'GET' && url.pathname === '/codex-api/thread-command-output') {
+        const threadId = url.searchParams.get('threadId')?.trim() ?? ''
+        const blockId = url.searchParams.get('blockId')?.trim() ?? ''
+        const itemId = url.searchParams.get('itemId')?.trim() ?? ''
+        const digest = url.searchParams.get('digest')?.trim() ?? ''
+        if (!threadId || !blockId || !itemId || !/^[a-f0-9]{40}$/u.test(digest)) {
+          setJson(res, 400, { error: 'Missing command output block identity' })
+          return
+        }
+
+        try {
+          let block = getStoredCommandOutputBlock(threadId, blockId, itemId, digest)
+          if (!block) {
+            const threadReadResult = await appServer.rpc('thread/read', {
+              threadId,
+              includeTurns: true,
+            })
+            const sanitized = await sanitizeThreadTurnsInlinePayloads('thread/read', threadReadResult)
+            const record = asRecord(sanitized)
+            const thread = asRecord(record?.thread)
+            const rawTurns = Array.isArray(thread?.turns) ? thread.turns : []
+            let turns = appServer.mergeItemsIntoTurns(threadId, rawTurns)
+            const sessionPath = readNonEmptyString(thread?.path)
+            if (sessionPath && isAbsolute(sessionPath)) {
+              try {
+                const sessionLogRaw = await readFile(sessionPath, 'utf8')
+                turns = mergeSessionCommandsIntoTurns(turns, sessionLogRaw)
+              } catch {
+                // Session log recovery is best-effort.
+              }
+            }
+
+            const output = findCommandOutputInTurns(turns, itemId, digest)
+            if (output === null) {
+              setJson(res, 404, { error: 'Command output block unavailable' })
+              return
+            }
+            const storedBlockId = storeCommandOutputBlock(threadId, itemId, output, digest)
+            block = getStoredCommandOutputBlock(threadId, storedBlockId, itemId, digest)
+          }
+
+          if (!block || blockId !== storeCommandOutputBlock(threadId, itemId, block.output, digest)) {
+            setJson(res, 404, { error: 'Command output block unavailable' })
+            return
+          }
+
+          setJson(res, 200, {
+            data: {
+              blockId,
+              output: block.output,
+              bytes: block.bytes,
+            },
+          })
+        } catch (error) {
+          setJson(res, 502, { error: getErrorMessage(error, 'Command output block read failed') })
+        }
+        return
+      }
+
       if (req.method === 'GET' && url.pathname === '/codex-api/thread-live-state') {
         const threadId = url.searchParams.get('threadId')?.trim() ?? ''
         if (!threadId) {
@@ -5821,12 +6034,28 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
         }
 
         try {
+          const generationAtStart = appServer.getLiveStateGeneration(threadId)
+          if (await maybeSendFastLiveStateUnchanged(req, res, threadId, generationAtStart, async (sessionPath) => {
+            if (!isAbsolute(sessionPath)) return null
+            try {
+              const s = await stat(sessionPath)
+              return { size: s.size, mtimeMs: s.mtimeMs }
+            } catch {
+              return null
+            }
+          })) {
+            return
+          }
+
           const threadReadResult = await appServer.rpc('thread/read', {
             threadId,
             includeTurns: true,
           })
           const sanitized = await sanitizeThreadTurnsInlinePayloads('thread/read', threadReadResult)
-          appServer.storeThreadReadSnapshot(threadId, sanitized)
+          const liveStateFreshForWrite = generationAtStart === appServer.getLiveStateGeneration(threadId)
+          if (liveStateFreshForWrite) {
+            appServer.storeThreadReadSnapshot(threadId, sanitized)
+          }
 
           const record = asRecord(sanitized)
           const thread = asRecord(record?.thread)
@@ -5834,16 +6063,27 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
 
           const sessionPath = readNonEmptyString(thread?.path)
           let sessionSize = 0
+          let sessionMtimeMs = 0
           if (sessionPath && isAbsolute(sessionPath)) {
             try {
               const s = await stat(sessionPath)
               sessionSize = s.size
+              sessionMtimeMs = s.mtimeMs
             } catch { /* missing */ }
           }
 
-          const cached = appServer.getCachedLiveState(threadId, rawTurns.length, sessionSize)
+          const cached = liveStateFreshForWrite
+            ? appServer.getCachedLiveState(threadId, rawTurns.length, sessionSize, sessionMtimeMs, generationAtStart)
+            : null
           if (cached) {
-            setJson(res, 200, cached)
+            const prepared = prepareLiveStateResponse(req, threadId, cached, {
+              generation: generationAtStart,
+              sessionPath: sessionPath ?? '',
+              sessionSize,
+              sessionMtimeMs,
+              isInProgress: false,
+            })
+            sendPreparedLiveStateResponse(res, prepared)
             return
           }
 
@@ -5871,11 +6111,20 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
             isInProgress,
           }
 
-          if (!isInProgress) {
-            appServer.cacheLiveState(threadId, responseData, rawTurns.length, sessionSize)
+          const generationForResponse = appServer.getLiveStateGeneration(threadId)
+          const prepared = prepareLiveStateResponse(req, threadId, responseData, {
+            generation: generationForResponse,
+            sessionPath: sessionPath ?? '',
+            sessionSize,
+            sessionMtimeMs,
+            isInProgress,
+          })
+
+          if (!isInProgress && liveStateFreshForWrite && generationForResponse === generationAtStart) {
+            appServer.cacheLiveState(threadId, prepared.data, rawTurns.length, sessionSize, sessionMtimeMs, generationForResponse)
           }
 
-          setJson(res, 200, responseData)
+          sendPreparedLiveStateResponse(res, prepared)
         } catch (error) {
           const snapshot = appServer.getLastThreadReadSnapshot(threadId)
           if (snapshot) {

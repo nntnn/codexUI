@@ -54,6 +54,7 @@
                   <button
                     type="button"
                     class="cmd-row"
+                    :aria-expanded="isCommandExpanded(cmd)"
                     :class="[
                       commandStatusClass(cmd),
                       {
@@ -70,13 +71,15 @@
                   <div
                     class="cmd-output-wrap"
                     :class="{ 'cmd-output-visible': isCommandExpanded(cmd) }"
+                    :aria-busy="isCommandOutputLoading(cmd)"
                   >
                     <div class="cmd-output-inner">
                       <pre
                         class="cmd-output"
                         :class="{ 'cmd-output-condensed': isCommandOutputCondensed(cmd) }"
-                        v-text="cmd.commandExecution?.aggregatedOutput || '(no output)'"
+                        v-text="commandOutputText(cmd)"
                       ></pre>
+                      <p v-if="commandOutputMetaLabel(cmd)" class="cmd-output-meta">{{ commandOutputMetaLabel(cmd) }}</p>
                     </div>
                   </div>
                 </div>
@@ -86,6 +89,7 @@
               <button
                 type="button"
                 class="cmd-row"
+                :aria-expanded="isCommandExpanded(message)"
                 :class="[
                   commandStatusClass(message),
                   {
@@ -102,13 +106,15 @@
               <div
                 class="cmd-output-wrap"
                 :class="{ 'cmd-output-visible': isCommandExpanded(message) }"
+                :aria-busy="isCommandOutputLoading(message)"
               >
                 <div class="cmd-output-inner">
                   <pre
                     class="cmd-output"
                     :class="{ 'cmd-output-condensed': isCommandOutputCondensed(message) }"
-                    v-text="message.commandExecution?.aggregatedOutput || '(no output)'"
+                    v-text="commandOutputText(message)"
                   ></pre>
+                  <p v-if="commandOutputMetaLabel(message)" class="cmd-output-meta">{{ commandOutputMetaLabel(message) }}</p>
                 </div>
               </div>
             </template>
@@ -264,6 +270,7 @@
                       <button
                         type="button"
                         class="cmd-row"
+                        :aria-expanded="isCommandExpanded(cmd)"
                         :class="[
                           commandStatusClass(cmd),
                           {
@@ -280,13 +287,15 @@
                       <div
                         class="cmd-output-wrap"
                         :class="{ 'cmd-output-visible': isCommandExpanded(cmd) }"
+                        :aria-busy="isCommandOutputLoading(cmd)"
                       >
                         <div class="cmd-output-inner">
                           <pre
                             class="cmd-output"
                             :class="{ 'cmd-output-condensed': isCommandOutputCondensed(cmd) }"
-                            v-text="cmd.commandExecution?.aggregatedOutput || '(no output)'"
+                            v-text="commandOutputText(cmd)"
                           ></pre>
+                          <p v-if="commandOutputMetaLabel(cmd)" class="cmd-output-meta">{{ commandOutputMetaLabel(cmd) }}</p>
                         </div>
                       </div>
                     </div>
@@ -871,6 +880,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { UiFileChange, UiLiveOverlay, UiMessage, UiPlanStep, UiServerRequest } from '../../types/codex'
 import { useMobile } from '../../composables/useMobile'
+import { getThreadCommandOutputBlock } from '../../api/codexGateway'
 
 import IconTablerArrowUp from '../icons/IconTablerArrowUp.vue'
 import IconTablerCopy from '../icons/IconTablerCopy.vue'
@@ -1081,6 +1091,75 @@ function isCommandOutputCondensed(message: UiMessage): boolean {
   return isCommandMessage(message) && (isLiveTurnRuntime.value || message.commandExecution?.status === 'inProgress')
 }
 
+function commandOutputText(message: UiMessage): string {
+  return message.commandExecution?.aggregatedOutput || '(no output)'
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  if (value < 1024) return `${Math.round(value)} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`
+  return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`
+}
+
+function commandOutputMetaLabel(message: UiMessage): string {
+  const block = message.commandExecution?.outputBlock
+  if (!block?.truncated) return ''
+  if (block.loaded) return `Full output loaded (${formatBytes(block.fullBytes)})`
+  if (block.loading) return 'Loading full output'
+  if (block.error) return `Preview ${formatBytes(block.previewBytes)} of ${formatBytes(block.fullBytes)} unavailable`
+  return `Preview ${formatBytes(block.previewBytes)} of ${formatBytes(block.fullBytes)}`
+}
+
+function isCommandOutputLoading(message: UiMessage): boolean {
+  return message.commandExecution?.outputBlock?.loading === true
+}
+
+async function preserveCommandOutputScroll(wasAutoFollow: boolean, bottomOffset: number): Promise<void> {
+  await nextTick()
+  requestAnimationFrame(() => {
+    const container = conversationListRef.value
+    if (!container) return
+    if (wasAutoFollow) {
+      scrollToBottom()
+      return
+    }
+    container.scrollTop = Math.max(0, container.scrollHeight - bottomOffset)
+  })
+}
+
+async function loadFullCommandOutput(message: UiMessage): Promise<void> {
+  const commandExecution = message.commandExecution
+  const outputBlock = commandExecution?.outputBlock
+  if (!props.activeThreadId || !commandExecution || !outputBlock?.truncated || outputBlock.loading || outputBlock.loaded) return
+
+  const container = conversationListRef.value
+  const bottomOffset = container ? container.scrollHeight - container.scrollTop : 0
+  const wasAutoFollow = autoFollowOutput.value
+  outputBlock.loading = true
+  outputBlock.error = false
+  expandedCommandIds.value = new Set(expandedCommandIds.value)
+
+  try {
+    const payload = await getThreadCommandOutputBlock({
+      threadId: props.activeThreadId,
+      blockId: outputBlock.blockId,
+      itemId: outputBlock.itemId || message.id,
+      digest: outputBlock.digest,
+    })
+    commandExecution.aggregatedOutput = payload.output
+    outputBlock.loaded = true
+    outputBlock.loading = false
+    outputBlock.error = false
+  } catch {
+    outputBlock.loading = false
+    outputBlock.error = true
+  } finally {
+    expandedCommandIds.value = new Set(expandedCommandIds.value)
+    await preserveCommandOutputScroll(wasAutoFollow, bottomOffset)
+  }
+}
+
 function toggleCommandExpand(message: UiMessage): void {
   if (!isCommandMessage(message)) return
 
@@ -1101,6 +1180,9 @@ function toggleCommandExpand(message: UiMessage): void {
 
   expandedCommandIds.value = nextExpanded
   collapsedAutoCommandIds.value = nextCollapsedAuto
+  if (isCommandExpanded(message)) {
+    void loadFullCommandOutput(message)
+  }
 }
 
 function getGroupedCommandsForLatest(message: UiMessage): UiMessage[] {
@@ -1194,6 +1276,13 @@ function selectDiffViewerChange(change: UiFileChange): void {
 function commandStatusLabel(message: UiMessage): string {
   const ce = message.commandExecution
   if (!ce) return ''
+  const outputBlock = ce.outputBlock
+  if (outputBlock?.truncated) {
+    if (outputBlock.loading) return 'Loading full output'
+    if (outputBlock.loaded) return 'Full output loaded'
+    if (outputBlock.error) return 'Preview unavailable'
+    return 'Preview'
+  }
   const compact = isCommandCompact(message)
   switch (ce.status) {
     case 'inProgress': return compact ? 'Running' : '⟳ Running'
@@ -5045,6 +5134,10 @@ onBeforeUnmount(() => {
 
 .cmd-output {
   @apply m-0 px-3 py-2 text-xs font-mono text-zinc-200 whitespace-pre-wrap break-words max-h-60 overflow-y-auto;
+}
+
+.cmd-output-meta {
+  @apply m-0 border-t border-zinc-800 px-3 py-1.5 text-[11px] font-medium text-zinc-400;
 }
 
 .cmd-output.cmd-output-condensed {

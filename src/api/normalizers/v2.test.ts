@@ -90,6 +90,35 @@ Reply with &lt;/instructions&gt; and A &amp; B
       automationDisplayName: 'automation-1',
     })
   })
+
+  it('keeps command output block metadata for lazy full-output loading', () => {
+    const messages = normalizeThreadMessagesV2(threadReadResponseWithContent([{
+      type: 'commandExecution',
+      id: 'cmd-1',
+      command: 'pnpm test',
+      cwd: '/tmp/project',
+      status: 'completed',
+      aggregatedOutput: 'preview',
+      exitCode: 0,
+      outputBlock: {
+        blockId: 'block-1',
+        itemId: 'cmd-1',
+        digest: 'a'.repeat(40),
+        truncated: true,
+        fullBytes: 65536,
+        previewBytes: 8192,
+      },
+    } as unknown as ThreadReadResponse['thread']['turns'][number]['items'][number]]))
+
+    expect(messages[0]?.commandExecution?.outputBlock).toMatchObject({
+      blockId: 'block-1',
+      itemId: 'cmd-1',
+      digest: 'a'.repeat(40),
+      truncated: true,
+      fullBytes: 65536,
+      previewBytes: 8192,
+    })
+  })
 })
 
 describe('normalizeThreadSummaryV2', () => {
