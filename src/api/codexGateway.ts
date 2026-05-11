@@ -764,6 +764,7 @@ async function fetchThreadLiveState(threadId: string): Promise<LiveStatePayload 
     liveStateResponseCache.set(threadId, cached)
     return cached.payload
   }
+  if (response.status === 204) return null
 
   if (!response.ok) return null
 
