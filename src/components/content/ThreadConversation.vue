@@ -1276,22 +1276,36 @@ function selectDiffViewerChange(change: UiFileChange): void {
 function commandStatusLabel(message: UiMessage): string {
   const ce = message.commandExecution
   if (!ce) return ''
-  const outputBlock = ce.outputBlock
-  if (outputBlock?.truncated) {
-    if (outputBlock.loading) return 'Loading full output'
-    if (outputBlock.loaded) return 'Full output loaded'
-    if (outputBlock.error) return 'Preview unavailable'
-    return 'Preview'
-  }
   const compact = isCommandCompact(message)
+  let executionLabel = ''
   switch (ce.status) {
-    case 'inProgress': return compact ? 'Running' : '⟳ Running'
-    case 'completed': return ce.exitCode === 0 ? (compact ? 'Done' : '✓ Completed') : `Exit ${ce.exitCode ?? '?'}`
-    case 'failed': return compact ? 'Failed' : '✗ Failed'
-    case 'declined': return compact ? 'Declined' : '⊘ Declined'
-    case 'interrupted': return compact ? 'Stopped' : '⊘ Interrupted'
-    default: return ''
+    case 'inProgress':
+      executionLabel = compact ? 'Running' : '⟳ Running'
+      break
+    case 'completed':
+      executionLabel = ce.exitCode === 0 ? (compact ? 'Done' : '✓ Completed') : `Exit ${ce.exitCode ?? '?'}`
+      break
+    case 'failed':
+      executionLabel = compact ? 'Failed' : '✗ Failed'
+      break
+    case 'declined':
+      executionLabel = compact ? 'Declined' : '⊘ Declined'
+      break
+    case 'interrupted':
+      executionLabel = compact ? 'Stopped' : '⊘ Interrupted'
+      break
+    default: executionLabel = ''
   }
+  const outputBlock = ce.outputBlock
+  if (!outputBlock?.truncated) return executionLabel
+  const outputLabel = outputBlock.loading
+    ? 'loading full output'
+    : outputBlock.loaded
+      ? 'full output'
+      : outputBlock.error
+        ? 'preview unavailable'
+        : 'preview'
+  return executionLabel ? `${executionLabel} - ${outputLabel}` : outputLabel
 }
 
 function commandStatusClass(message: UiMessage): string {

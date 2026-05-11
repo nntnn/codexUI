@@ -783,6 +783,7 @@ async function fetchThreadLiveState(threadId: string): Promise<LiveStatePayload 
 }
 
 function threadReadResponseFromLiveState(threadId: string, payload: LiveStatePayload): ThreadReadResponse | null {
+  if (payload.liveStateError) return null
   const turns = Array.isArray(payload.conversationState?.turns)
     ? payload.conversationState.turns
     : null

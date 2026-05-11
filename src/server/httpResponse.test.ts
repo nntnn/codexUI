@@ -22,6 +22,8 @@ describe('acceptsGzipEncoding', () => {
     expect(acceptsGzipEncoding('br, gzip')).toBe(true)
     expect(acceptsGzipEncoding('br, *;q=0.5')).toBe(true)
     expect(acceptsGzipEncoding('gzip;q=0')).toBe(false)
+    expect(acceptsGzipEncoding('gzip;q=0, *;q=1')).toBe(false)
+    expect(acceptsGzipEncoding('gzip;q=0.25, *;q=0')).toBe(true)
     expect(acceptsGzipEncoding('br')).toBe(false)
   })
 })

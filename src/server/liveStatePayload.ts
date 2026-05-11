@@ -20,6 +20,14 @@ export type CommandOutputBlockStats = {
   previewBytes: number
 }
 
+export type CommandOutputBlockOptions = {
+  maxBytes?: number
+}
+
+export type SlimLiveStateOptions = {
+  commandOutputBlockCacheMaxBytes?: number
+}
+
 export type LiveStateDigestMetadata = {
   threadId: string
   digest: string
@@ -215,10 +223,17 @@ export function invalidateLiveStateDigest(threadId: string): void {
   liveStateDigestCache.delete(threadId)
 }
 
-export function storeCommandOutputBlock(threadId: string, itemId: string, output: string, digest = hashCommandOutput(output)): string {
+export function storeCommandOutputBlock(
+  threadId: string,
+  itemId: string,
+  output: string,
+  digest = hashCommandOutput(output),
+  options: CommandOutputBlockOptions = {},
+): string | null {
   const blockId = makeCommandOutputBlockId(threadId, itemId, digest)
   const bytes = byteLengthUtf8(output)
-  if (bytes > COMMAND_OUTPUT_BLOCK_CACHE_MAX_BYTES) return blockId
+  const maxBytes = Math.max(0, options.maxBytes ?? COMMAND_OUTPUT_BLOCK_CACHE_MAX_BYTES)
+  if (bytes > maxBytes) return null
   commandOutputBlockCache.delete(blockId)
   commandOutputBlockCache.set(blockId, {
     threadId,
@@ -270,7 +285,11 @@ export function findCommandOutputInTurns(turns: unknown[], itemId: string, diges
   return matchedCount === 1 ? matched : null
 }
 
-export function slimLiveStateCommandOutputs(threadId: string, responseData: unknown): { data: unknown; stats: CommandOutputBlockStats } {
+export function slimLiveStateCommandOutputs(
+  threadId: string,
+  responseData: unknown,
+  options: SlimLiveStateOptions = {},
+): { data: unknown; stats: CommandOutputBlockStats } {
   const emptyStats = { blockCount: 0, fullBytes: 0, previewBytes: 0 }
   if (!COMMAND_OUTPUT_BLOCKS_ENABLED) return { data: responseData, stats: emptyStats }
 
@@ -306,7 +325,13 @@ export function slimLiveStateCommandOutputs(threadId: string, responseData: unkn
       }
 
       const digest = hashCommandOutput(output)
-      const blockId = storeCommandOutputBlock(threadId, itemId, output, digest)
+      const blockId = storeCommandOutputBlock(threadId, itemId, output, digest, {
+        maxBytes: options.commandOutputBlockCacheMaxBytes,
+      })
+      if (!blockId) {
+        responseBudget -= fullBytes
+        return item
+      }
       const previewBudget = responseBudget > 0 ? Math.min(COMMAND_OUTPUT_BLOCK_PREVIEW_BYTES, responseBudget) : 1024
       const preview = createCommandOutputPreview(output, fullBytes, Math.max(1024, previewBudget))
       const previewBytes = byteLengthUtf8(preview)

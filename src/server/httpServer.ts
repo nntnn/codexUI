@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url'
-import { dirname, extname, isAbsolute, join } from 'node:path'
+import { dirname, extname, isAbsolute, join, resolve, sep } from 'node:path'
 import type { Server as HttpServer, IncomingMessage } from 'node:http'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { writeFile, stat } from 'node:fs/promises'
@@ -13,6 +13,7 @@ import { WebSocketServer, type WebSocket } from 'ws'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
+const distAssetsDir = join(distDir, 'assets')
 const spaEntryFile = join(distDir, 'index.html')
 const STATIC_GZIP_EXTENSIONS = new Set(['.js', '.css'])
 
@@ -117,6 +118,28 @@ function requestHasFreshStaticAsset(req: Request, entry: StaticAssetCacheEntry):
   return Number.isFinite(modifiedSince) && Math.trunc(entry.mtimeMs / 1000) <= Math.trunc(modifiedSince / 1000)
 }
 
+function isPathInsideDirectory(parent: string, candidate: string): boolean {
+  const normalizedParent = parent.endsWith(sep) ? parent : `${parent}${sep}`
+  return candidate.startsWith(normalizedParent)
+}
+
+export function resolveGzippedStaticAssetPath(pathname: string): string | null {
+  let relativePath = ''
+  try {
+    relativePath = decodeURIComponent(pathname).replace(/^\/+/u, '')
+  } catch {
+    return null
+  }
+
+  if (!relativePath.startsWith('assets/')) return null
+  const extension = extname(relativePath).toLowerCase()
+  if (!STATIC_GZIP_EXTENSIONS.has(extension)) return null
+
+  const assetPath = resolve(distDir, relativePath)
+  if (!isPathInsideDirectory(distAssetsDir, assetPath)) return null
+  return assetPath
+}
+
 function maybeServeGzippedStaticAsset(req: Request, res: Response, next: NextFunction): void {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     next()
@@ -127,34 +150,23 @@ function maybeServeGzippedStaticAsset(req: Request, res: Response, next: NextFun
     return
   }
 
-  let relativePath = ''
+  let assetPath: string | null = null
   try {
     const url = new URL(req.url ?? '', 'http://localhost')
-    relativePath = decodeURIComponent(url.pathname).replace(/^\/+/u, '')
+    assetPath = resolveGzippedStaticAssetPath(url.pathname)
   } catch {
     next()
     return
   }
 
-  if (!relativePath.startsWith('assets/')) {
-    next()
-    return
-  }
-  const extension = extname(relativePath).toLowerCase()
-  if (!STATIC_GZIP_EXTENSIONS.has(extension)) {
-    next()
-    return
-  }
-
-  const assetPath = join(distDir, relativePath)
-  if (!existsSync(assetPath)) {
+  if (!assetPath || !existsSync(assetPath)) {
     next()
     return
   }
 
   const entry = getCachedGzippedStaticAsset(assetPath)
   res.status(requestHasFreshStaticAsset(req, entry) ? 304 : 200)
-  res.type(extension)
+  res.type(extname(assetPath).toLowerCase())
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
   res.setHeader('ETag', entry.etag)
   res.setHeader('Last-Modified', entry.lastModified)

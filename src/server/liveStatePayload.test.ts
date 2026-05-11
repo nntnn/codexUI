@@ -63,6 +63,38 @@ describe('live-state command output blocks', () => {
     expect(stored?.output).toBe(output)
     expect(findCommandOutputInTurns(response.conversationState.turns, 'cmd-1', item.outputBlock?.digest ?? '')).toBe(output)
   })
+
+  it('leaves command output intact when the full block is too large to cache', () => {
+    const output = 'abcdefghijklmnopqrstuvwxyz\n'.repeat(2000)
+    const response = {
+      threadId: 'thread-1',
+      conversationState: {
+        turns: [{
+          id: 'turn-1',
+          items: [{
+            id: 'cmd-1',
+            type: 'commandExecution',
+            status: 'completed',
+            aggregatedOutput: output,
+            exitCode: 0,
+          }],
+        }],
+      },
+      isInProgress: false,
+    }
+
+    const slimmed = slimLiveStateCommandOutputs('thread-1', response, {
+      commandOutputBlockCacheMaxBytes: 16,
+    })
+    const item = (slimmed.data as typeof response).conversationState.turns[0]?.items[0] as {
+      aggregatedOutput: string
+      outputBlock?: unknown
+    }
+
+    expect(slimmed.stats.blockCount).toBe(0)
+    expect(item.aggregatedOutput).toBe(output)
+    expect(item.outputBlock).toBeUndefined()
+  })
 })
 
 describe('live-state digest preparation', () => {

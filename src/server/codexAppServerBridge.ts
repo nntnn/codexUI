@@ -6005,10 +6005,14 @@ export function createCodexBridgeMiddleware(): CodexBridgeMiddleware {
               return
             }
             const storedBlockId = storeCommandOutputBlock(threadId, itemId, output, digest)
+            if (storedBlockId !== blockId) {
+              setJson(res, 404, { error: 'Command output block unavailable' })
+              return
+            }
             block = getStoredCommandOutputBlock(threadId, storedBlockId, itemId, digest)
           }
 
-          if (!block || blockId !== storeCommandOutputBlock(threadId, itemId, block.output, digest)) {
+          if (!block) {
             setJson(res, 404, { error: 'Command output block unavailable' })
             return
           }

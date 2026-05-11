@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { listDirectoryComposioConnectors, startThreadTurn } from './codexGateway'
+import { getThreadDetail, listDirectoryComposioConnectors, startThreadTurn } from './codexGateway'
 
 function mockRpcFetch(): { requests: Array<{ method: string, params: Record<string, unknown> }> } {
   const requests: Array<{ method: string, params: Record<string, unknown> }> = []
@@ -85,5 +85,81 @@ describe('listDirectoryComposioConnectors', () => {
     await listDirectoryComposioConnectors('instagram', '50', 25)
 
     expect(requests).toEqual(['/codex-api/composio/connectors?query=instagram&cursor=50&limit=25'])
+  })
+})
+
+describe('getThreadDetail live-state fallback', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('falls back to thread/read when live-state carries an error snapshot', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(String(input))
+      if (String(input).startsWith('/codex-api/thread-live-state')) {
+        return new Response(JSON.stringify({
+          threadId: 'thread-1',
+          conversationState: {
+            turns: [{
+              id: 'stale-turn',
+              items: [{
+                id: 'stale-msg',
+                type: 'agentMessage',
+                text: 'stale snapshot',
+              }],
+            }],
+          },
+          liveStateError: {
+            kind: 'readFailed',
+            message: 'thread/read failed',
+          },
+          isInProgress: false,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
+      const body = typeof init?.body === 'string'
+        ? JSON.parse(init.body) as { method: string }
+        : { method: '' }
+      expect(body.method).toBe('thread/read')
+      return new Response(JSON.stringify({
+        result: {
+          thread: {
+            id: 'thread-1',
+            preview: '',
+            modelProvider: '',
+            createdAt: 0,
+            updatedAt: 0,
+            path: null,
+            cwd: '',
+            cliVersion: '',
+            source: 'appServer',
+            gitInfo: null,
+            turns: [{
+              id: 'fresh-turn',
+              items: [{
+                id: 'fresh-msg',
+                type: 'agentMessage',
+                text: 'fresh thread/read',
+              }],
+            }],
+          },
+        },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }))
+
+    const detail = await getThreadDetail('thread-1')
+
+    expect(requests).toEqual([
+      '/codex-api/thread-live-state?threadId=thread-1',
+      '/codex-api/rpc',
+    ])
+    expect(detail.messages.map((message) => message.text)).toEqual(['fresh thread/read'])
   })
 })
