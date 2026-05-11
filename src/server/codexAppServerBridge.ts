@@ -34,6 +34,7 @@ import { handleOpenRouterProxyRequest } from './openRouterProxy.js'
 import { handleZenProxyRequest } from './zenProxy.js'
 import { handleCustomEndpointProxyRequest } from './customEndpointProxy.js'
 import { ThreadTerminalManager } from './terminalManager.js'
+import { sendJsonResponse } from './httpResponse.js'
 import { getSpawnInvocation } from '../utils/commandInvocation.js'
 import {
   resolveCodexCommand,
@@ -916,9 +917,7 @@ function getErrorMessage(payload: unknown, fallback: string): string {
 }
 
 function setJson(res: ServerResponse, statusCode: number, payload: unknown): void {
-  res.statusCode = statusCode
-  res.setHeader('Content-Type', 'application/json; charset=utf-8')
-  res.end(JSON.stringify(payload))
+  sendJsonResponse(res, statusCode, payload)
 }
 
 function logProviderModelDiscoveryWarning(message: string, details: Record<string, unknown>): void {
@@ -3465,7 +3464,7 @@ function trimThreadTitleCache(cache: ThreadTitleCache): ThreadTitleCache {
   return { titles, order }
 }
 
-function mergeThreadTitleCaches(base: ThreadTitleCache, overlay: ThreadTitleCache): ThreadTitleCache {
+export function mergeThreadTitleCaches(base: ThreadTitleCache, overlay: ThreadTitleCache): ThreadTitleCache {
   const titles = { ...base.titles, ...overlay.titles }
   const order: string[] = []
 
@@ -3866,7 +3865,7 @@ async function readMergedThreadTitleCache(): Promise<ThreadTitleCache> {
     readThreadTitlesFromSessionIndex(),
     readThreadTitleCache(),
   ])
-  return mergeThreadTitleCaches(persistedCache, sessionIndexCache)
+  return mergeThreadTitleCaches(sessionIndexCache, persistedCache)
 }
 
 async function readWorkspaceRootsState(): Promise<WorkspaceRootsState> {

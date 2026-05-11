@@ -1,17 +1,30 @@
 import { fileURLToPath } from 'node:url'
 import { dirname, extname, isAbsolute, join } from 'node:path'
 import type { Server as HttpServer, IncomingMessage } from 'node:http'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { writeFile, stat } from 'node:fs/promises'
-import express, { type Express } from 'express'
+import { gzipSync } from 'node:zlib'
+import express, { type Express, type NextFunction, type Request, type Response } from 'express'
 import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthSession } from './authMiddleware.js'
 import { createDirectoryListingHtml, createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from './localBrowseUi.js'
+import { acceptsGzipEncoding } from './httpResponse.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const distDir = join(__dirname, '..', 'dist')
 const spaEntryFile = join(distDir, 'index.html')
+const STATIC_GZIP_EXTENSIONS = new Set(['.js', '.css'])
+
+type StaticAssetCacheEntry = {
+  size: number
+  mtimeMs: number
+  etag: string
+  lastModified: string
+  gzipped: Buffer
+}
+
+const gzippedStaticAssetCache = new Map<string, StaticAssetCacheEntry>()
 
 export type ServerOptions = {
   password?: string
@@ -70,6 +83,95 @@ function readWildcardPathParam(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.join('/')
   return ''
+}
+
+function buildStaticAssetEtag(size: number, mtimeMs: number): string {
+  return `W/"${String(size)}-${String(Math.trunc(mtimeMs))}"`
+}
+
+function getCachedGzippedStaticAsset(assetPath: string): StaticAssetCacheEntry {
+  const stats = statSync(assetPath)
+  const cached = gzippedStaticAssetCache.get(assetPath)
+  if (cached && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) {
+    return cached
+  }
+
+  const entry = {
+    size: stats.size,
+    mtimeMs: stats.mtimeMs,
+    etag: buildStaticAssetEtag(stats.size, stats.mtimeMs),
+    lastModified: stats.mtime.toUTCString(),
+    gzipped: gzipSync(readFileSync(assetPath)),
+  }
+  gzippedStaticAssetCache.set(assetPath, entry)
+  return entry
+}
+
+function requestHasFreshStaticAsset(req: Request, entry: StaticAssetCacheEntry): boolean {
+  const ifNoneMatch = req.headers['if-none-match']
+  const etags = Array.isArray(ifNoneMatch) ? ifNoneMatch : ifNoneMatch?.split(',').map((value) => value.trim()) ?? []
+  if (etags.includes(entry.etag) || etags.includes('*')) return true
+
+  const ifModifiedSince = req.headers['if-modified-since']
+  const modifiedSince = typeof ifModifiedSince === 'string' ? Date.parse(ifModifiedSince) : Number.NaN
+  return Number.isFinite(modifiedSince) && Math.trunc(entry.mtimeMs / 1000) <= Math.trunc(modifiedSince / 1000)
+}
+
+function maybeServeGzippedStaticAsset(req: Request, res: Response, next: NextFunction): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    next()
+    return
+  }
+  if (!acceptsGzipEncoding(req.headers['accept-encoding'])) {
+    next()
+    return
+  }
+
+  let relativePath = ''
+  try {
+    const url = new URL(req.url ?? '', 'http://localhost')
+    relativePath = decodeURIComponent(url.pathname).replace(/^\/+/u, '')
+  } catch {
+    next()
+    return
+  }
+
+  if (!relativePath.startsWith('assets/')) {
+    next()
+    return
+  }
+  const extension = extname(relativePath).toLowerCase()
+  if (!STATIC_GZIP_EXTENSIONS.has(extension)) {
+    next()
+    return
+  }
+
+  const assetPath = join(distDir, relativePath)
+  if (!existsSync(assetPath)) {
+    next()
+    return
+  }
+
+  const entry = getCachedGzippedStaticAsset(assetPath)
+  res.status(requestHasFreshStaticAsset(req, entry) ? 304 : 200)
+  res.type(extension)
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+  res.setHeader('ETag', entry.etag)
+  res.setHeader('Last-Modified', entry.lastModified)
+  res.setHeader('Vary', 'Accept-Encoding')
+  res.setHeader('Content-Encoding', 'gzip')
+
+  if (res.statusCode === 304) {
+    res.end()
+    return
+  }
+
+  res.setHeader('Content-Length', String(entry.gzipped.length))
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  res.end(entry.gzipped)
 }
 
 export function createServer(options: ServerOptions = {}): ServerInstance {
@@ -222,6 +324,7 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
 
   // 8. Static files from Vue build
   if (hasFrontendAssets) {
+    app.use(maybeServeGzippedStaticAsset)
     app.use(express.static(distDir))
   }
 

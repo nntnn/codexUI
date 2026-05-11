@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeThreadMessagesV2 } from './v2'
+import { normalizeThreadMessagesV2, normalizeThreadSummaryV2 } from './v2'
 import type { ThreadReadResponse } from '../appServerDtos'
 
 function threadReadResponseWithContent(content: ThreadReadResponse['thread']['turns'][number]['items'][number][]): ThreadReadResponse {
@@ -89,5 +89,17 @@ Reply with &lt;/instructions&gt; and A &amp; B
       isAutomationRun: true,
       automationDisplayName: 'automation-1',
     })
+  })
+})
+
+describe('normalizeThreadSummaryV2', () => {
+  it('prefers a generated title over a stale thread name', () => {
+    const response = threadReadResponseWithContent([]) as ThreadReadResponse & {
+      thread: ThreadReadResponse['thread'] & { name?: string; title?: string }
+    }
+    response.thread.name = 'Stale first prompt title'
+    response.thread.title = 'Generated completed conversation title'
+
+    expect(normalizeThreadSummaryV2(response).title).toBe('Generated completed conversation title')
   })
 })

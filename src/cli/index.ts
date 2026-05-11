@@ -528,7 +528,10 @@ async function startServer(options: {
     console.log('\nCodex is not logged in. You can log in later via settings or run `codexui login`.\n')
   }
   const requestedPort = parseInt(options.port, 10)
-  const passwordResolution = resolvePassword(options.password)
+  const passwordInput = typeof options.password === 'string' || options.password === false
+    ? options.password
+    : (process.env.CODEXAPP_PASSWORD?.trim() || options.password)
+  const passwordResolution = resolvePassword(passwordInput)
   const password = passwordResolution.password
   const generatedPasswordPath = password && passwordResolution.generated
     ? await persistGeneratedPassword(password)

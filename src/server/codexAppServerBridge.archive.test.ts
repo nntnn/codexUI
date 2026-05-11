@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { callRpcWithArchiveRecovery } from './codexAppServerBridge'
+import { callRpcWithArchiveRecovery, mergeThreadTitleCaches } from './codexAppServerBridge'
 
 describe('callRpcWithArchiveRecovery', () => {
   it('sets a fallback name and retries archive when Codex has not materialized a rollout', async () => {
@@ -73,5 +73,29 @@ describe('callRpcWithArchiveRecovery', () => {
 
     await expect(callRpcWithArchiveRecovery(appServer, 'thread/archive', { threadId: 'test-thread' })).rejects.toThrow('network failed')
     await expect(callRpcWithArchiveRecovery(appServer, 'thread/read', { threadId: 'test-thread' })).rejects.toThrow('network failed')
+  })
+})
+
+describe('mergeThreadTitleCaches', () => {
+  it('lets the overlay title override stale base titles while preserving order', () => {
+    const merged = mergeThreadTitleCaches(
+      {
+        titles: {
+          'thread-1': 'Session index title',
+          'thread-2': 'Only in session index',
+        },
+        order: ['thread-1', 'thread-2'],
+      },
+      {
+        titles: {
+          'thread-1': 'Persisted generated title',
+          'thread-3': 'Only persisted',
+        },
+        order: ['thread-3', 'thread-1'],
+      },
+    )
+
+    expect(merged.titles['thread-1']).toBe('Persisted generated title')
+    expect(merged.order.slice(0, 3)).toEqual(['thread-3', 'thread-1', 'thread-2'])
   })
 })

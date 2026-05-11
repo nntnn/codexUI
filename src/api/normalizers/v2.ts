@@ -530,8 +530,8 @@ function normalizeCommandStatus(value: unknown): CommandExecutionData['status'] 
 function pickThreadName(summary: Thread): string {
   const rawSummary = summary as Record<string, unknown>
   const direct = [
-    rawSummary.name,
     rawSummary.title,
+    rawSummary.name,
     summary.preview,
   ]
   for (const candidate of direct) {
