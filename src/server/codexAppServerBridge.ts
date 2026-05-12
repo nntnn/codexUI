@@ -3184,6 +3184,105 @@ type ThreadAutomationRecord = {
   nextRunAtMs: number | null
 }
 
+function parseAutomationRruleParts(rrule: string): Record<string, string> {
+  return Object.fromEntries(
+    rrule
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [key, ...rest] = part.split('=')
+        return [key.trim().toUpperCase(), rest.join('=').trim()]
+      })
+      .filter(([key, value]) => key && value),
+  )
+}
+
+function readPositiveRruleInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.max(1, Math.floor(parsed))
+}
+
+function readRruleClockPart(value: string | undefined, max: number): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return 0
+  return Math.min(max, Math.max(0, Math.floor(parsed)))
+}
+
+function addLocalDays(timestampMs: number, days: number): number {
+  const date = new Date(timestampMs)
+  date.setDate(date.getDate() + days)
+  return date.getTime()
+}
+
+function localDailyRunAtMs(timestampMs: number, hour: number, minute: number): number {
+  const date = new Date(timestampMs)
+  date.setHours(hour, minute, 0, 0)
+  return date.getTime()
+}
+
+function computeLatestDailyRunAtOrAfterCreated(createdAtMs: number, nowMs: number, hour: number, minute: number, intervalDays: number): number {
+  let candidate = localDailyRunAtMs(nowMs, hour, minute)
+  while (candidate > nowMs) {
+    candidate = addLocalDays(candidate, -intervalDays)
+  }
+  while (candidate < createdAtMs) {
+    candidate = addLocalDays(candidate, intervalDays)
+  }
+  return candidate
+}
+
+export function computeHeartbeatAutomationSchedule(
+  automation: Pick<ThreadAutomationRecord, 'rrule' | 'status' | 'createdAtMs'>,
+  lastQueuedAtMs: number | null,
+  nowMs = Date.now(),
+): AutomationSchedule {
+  if (automation.status !== 'ACTIVE') {
+    return { dueRunAtMs: null, nextRunAtMs: null }
+  }
+
+  const parts = parseAutomationRruleParts(automation.rrule)
+  const frequency = parts.FREQ?.toUpperCase()
+  const createdAtMs = automation.createdAtMs && Number.isFinite(automation.createdAtMs) ? automation.createdAtMs : nowMs
+
+  let dueRunAtMs: number | null = null
+  let nextRunAtMs: number | null = null
+
+  if (frequency === 'DAILY' && parts.BYHOUR !== undefined && parts.BYMINUTE !== undefined) {
+    const hour = readRruleClockPart(parts.BYHOUR, 23)
+    const minute = readRruleClockPart(parts.BYMINUTE, 59)
+    const intervalDays = readPositiveRruleInteger(parts.INTERVAL, 1)
+    const candidate = computeLatestDailyRunAtOrAfterCreated(createdAtMs, nowMs, hour, minute, intervalDays)
+    if (candidate <= nowMs) {
+      dueRunAtMs = candidate
+      nextRunAtMs = addLocalDays(candidate, intervalDays)
+    } else {
+      nextRunAtMs = candidate
+    }
+  } else if (frequency === 'MINUTELY' || frequency === 'HOURLY' || frequency === 'DAILY') {
+    const interval = readPositiveRruleInteger(parts.INTERVAL, 1)
+    const intervalMs = frequency === 'MINUTELY'
+      ? interval * 60_000
+      : frequency === 'HOURLY'
+        ? interval * 60 * 60_000
+        : interval * 24 * 60 * 60_000
+    const firstRunAtMs = createdAtMs + intervalMs
+    if (firstRunAtMs <= nowMs) {
+      const elapsedIntervals = Math.floor((nowMs - firstRunAtMs) / intervalMs)
+      dueRunAtMs = firstRunAtMs + elapsedIntervals * intervalMs
+      nextRunAtMs = dueRunAtMs + intervalMs
+    } else {
+      nextRunAtMs = firstRunAtMs
+    }
+  }
+
+  if (dueRunAtMs !== null && lastQueuedAtMs !== null && lastQueuedAtMs >= dueRunAtMs) {
+    return { dueRunAtMs: null, nextRunAtMs }
+  }
+  return { dueRunAtMs, nextRunAtMs }
+}
+
 function readTomlString(value: string): string {
   const trimmed = value.trim()
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
@@ -3270,21 +3369,37 @@ async function readAutomationRecordFromFile(filePath: string): Promise<ThreadAut
   }
 }
 
-async function listThreadHeartbeatAutomations(): Promise<Record<string, ThreadAutomationRecord[]>> {
+async function listAllThreadHeartbeatAutomationRecords(): Promise<ThreadAutomationRecord[]> {
   const automationRoot = getCodexAutomationsDir()
-  const next: Record<string, ThreadAutomationRecord[]> = {}
   let entries
   try {
     entries = await readdir(automationRoot, { withFileTypes: true })
   } catch {
-    return next
+    return []
   }
 
+  const automations: ThreadAutomationRecord[] = []
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
     const automation = await readAutomationRecordFromFile(join(automationRoot, entry.name, 'automation.toml'))
     if (!automation || automation.kind !== 'heartbeat' || !automation.targetThreadId) continue
-    next[automation.targetThreadId] = [...(next[automation.targetThreadId] ?? []), automation]
+    automations.push(automation)
+  }
+  return automations
+}
+
+async function listThreadHeartbeatAutomations(): Promise<Record<string, ThreadAutomationRecord[]>> {
+  const schedulerState = await readAutomationSchedulerState()
+  const next: Record<string, ThreadAutomationRecord[]> = {}
+
+  for (const automation of await listAllThreadHeartbeatAutomationRecords()) {
+    if (!automation.targetThreadId) continue
+    const schedule = computeHeartbeatAutomationSchedule(
+      automation,
+      schedulerState[automation.id]?.lastQueuedAtMs ?? null,
+    )
+    const withSchedule = { ...automation, nextRunAtMs: schedule.nextRunAtMs }
+    next[automation.targetThreadId] = [...(next[automation.targetThreadId] ?? []), withSchedule]
   }
 
   for (const automations of Object.values(next)) {
@@ -3546,6 +3661,8 @@ async function writePinnedThreadIds(threadIds: string[]): Promise<void> {
 
 const FIRST_LAUNCH_PLUGINS_CARD_DISMISSED_KEY = 'first-launch-plugins-card-dismissed'
 const THREAD_QUEUE_STATE_KEY = 'thread-queue-state'
+const AUTOMATION_SCHEDULER_STATE_KEY = 'automation-scheduler-state'
+const AUTOMATION_SCHEDULER_POLL_MS = 60_000
 
 type StoredQueuedMessage = {
   id: string
@@ -3571,6 +3688,13 @@ type ThreadQueueStateUpdate<T> = {
 type ResolvedCollaborationModeSettings = {
   model: string
   reasoningEffort: ReasoningEffort | null
+}
+
+type AutomationSchedulerState = Record<string, { lastQueuedAtMs: number }>
+
+type AutomationSchedule = {
+  dueRunAtMs: number | null
+  nextRunAtMs: number | null
 }
 
 function normalizeStoredQueuedMessage(value: unknown): StoredQueuedMessage | null {
@@ -3683,6 +3807,52 @@ async function writeThreadQueueState(nextState: ThreadQueueState): Promise<void>
   }))
 }
 
+function normalizeAutomationSchedulerState(value: unknown): AutomationSchedulerState {
+  const record = asRecord(value)
+  if (!record) return {}
+  const state: AutomationSchedulerState = {}
+  for (const [automationId, raw] of Object.entries(record)) {
+    const normalizedAutomationId = automationId.trim()
+    const row = asRecord(raw)
+    const lastQueuedAtMs = typeof row?.lastQueuedAtMs === 'number'
+      ? row.lastQueuedAtMs
+      : Number(row?.lastQueuedAtMs)
+    if (!normalizedAutomationId || !Number.isFinite(lastQueuedAtMs) || lastQueuedAtMs <= 0) continue
+    state[normalizedAutomationId] = { lastQueuedAtMs: Math.floor(lastQueuedAtMs) }
+  }
+  return state
+}
+
+async function readAutomationSchedulerState(): Promise<AutomationSchedulerState> {
+  const statePath = getCodexGlobalStatePath()
+  try {
+    const raw = await readFile(statePath, 'utf8')
+    const payload = asRecord(JSON.parse(raw)) ?? {}
+    return normalizeAutomationSchedulerState(payload[AUTOMATION_SCHEDULER_STATE_KEY])
+  } catch {
+    return {}
+  }
+}
+
+async function writeAutomationSchedulerState(nextState: AutomationSchedulerState): Promise<void> {
+  const statePath = getCodexGlobalStatePath()
+  let payload: Record<string, unknown> = {}
+  try {
+    const raw = await readFile(statePath, 'utf8')
+    payload = asRecord(JSON.parse(raw)) ?? {}
+  } catch {
+    payload = {}
+  }
+
+  const normalized = normalizeAutomationSchedulerState(nextState)
+  if (Object.keys(normalized).length > 0) {
+    payload[AUTOMATION_SCHEDULER_STATE_KEY] = normalized
+  } else {
+    delete payload[AUTOMATION_SCHEDULER_STATE_KEY]
+  }
+  await writeFile(statePath, JSON.stringify(payload), 'utf8')
+}
+
 async function appendThreadQueuedMessage(threadId: string, message: StoredQueuedMessage): Promise<void> {
   const normalizedThreadId = threadId.trim()
   if (!normalizedThreadId) throw new Error('threadId is required')
@@ -3727,6 +3897,10 @@ function buildTextWithAttachments(prompt: string, files: StoredQueuedMessage['fi
   return `${prefix}\n## My request for Codex:\n\n${prompt}\n`
 }
 
+export function isThreadStatusBusyForQueuedTurn(statusType: string): boolean {
+  return statusType === 'inProgress' || statusType === 'running'
+}
+
 function escapeHeartbeatXmlText(value: string): string {
   return value
     .replace(/&/gu, '&amp;')
@@ -3749,6 +3923,16 @@ ${escapeHeartbeatXmlText(automation.prompt)}
     fileAttachments: [],
     collaborationMode: 'default',
   }
+}
+
+function isHeartbeatQueuedMessageForAutomation(message: StoredQueuedMessage, automationId: string): boolean {
+  const escapedAutomationId = escapeHeartbeatXmlText(automationId)
+  return message.text.includes(`<automation_id>${escapedAutomationId}</automation_id>`)
+}
+
+async function hasQueuedHeartbeatRun(threadId: string, automationId: string): Promise<boolean> {
+  const state = await readThreadQueueState()
+  return (state[threadId] ?? []).some((message) => isHeartbeatQueuedMessageForAutomation(message, automationId))
 }
 
 function fileNameFromPath(pathValue: string): string {
@@ -4966,6 +5150,55 @@ class AppServerProcess {
   }
 }
 
+class HeartbeatAutomationScheduler {
+  private readonly timer: ReturnType<typeof setInterval>
+  private running = false
+
+  constructor(private readonly backendQueueProcessor: BackendQueueProcessor) {
+    void this.runOnce()
+    this.timer = setInterval(() => {
+      void this.runOnce()
+    }, AUTOMATION_SCHEDULER_POLL_MS)
+    this.timer.unref?.()
+  }
+
+  dispose(): void {
+    clearInterval(this.timer)
+  }
+
+  async runOnce(nowMs = Date.now()): Promise<void> {
+    if (this.running) return
+    this.running = true
+    try {
+      const schedulerState = await readAutomationSchedulerState()
+      let changed = false
+
+      for (const automation of await listAllThreadHeartbeatAutomationRecords()) {
+        if (automation.status !== 'ACTIVE' || !automation.targetThreadId) continue
+        const lastQueuedAtMs = schedulerState[automation.id]?.lastQueuedAtMs ?? null
+        const schedule = computeHeartbeatAutomationSchedule(automation, lastQueuedAtMs, nowMs)
+        if (schedule.dueRunAtMs === null) continue
+
+        if (!(await hasQueuedHeartbeatRun(automation.targetThreadId, automation.id))) {
+          await appendThreadQueuedMessage(automation.targetThreadId, buildHeartbeatQueuedMessage(automation))
+          this.backendQueueProcessor.scheduleThreadQueueDrain(automation.targetThreadId, 0)
+        }
+
+        schedulerState[automation.id] = { lastQueuedAtMs: schedule.dueRunAtMs }
+        changed = true
+      }
+
+      if (changed) {
+        await writeAutomationSchedulerState(schedulerState)
+      }
+    } catch {
+      // Scheduler failures must not bring down the bridge. The next poll can retry.
+    } finally {
+      this.running = false
+    }
+  }
+}
+
 export class BackendQueueProcessor {
   private readonly processingThreadIds = new Set<string>()
   private readonly queueDrainTimersByThreadId = new Map<string, ReturnType<typeof setTimeout>>()
@@ -5068,7 +5301,7 @@ export class BackendQueueProcessor {
 
     const status = asRecord(thread.status)
     const statusType = readNonEmptyString(status?.type)
-    if (statusType === 'inProgress' || statusType === 'running' || statusType === 'active') return false
+    if (isThreadStatusBusyForQueuedTurn(statusType)) return false
 
     const turns = Array.isArray(thread.turns) ? thread.turns : []
     return !turns.some((turn) => readNonEmptyString(asRecord(turn)?.status) === 'inProgress')
@@ -5334,6 +5567,7 @@ type SharedBridgeState = {
   methodCatalog: MethodCatalog
   telegramBridge: TelegramThreadBridge
   backendQueueProcessor: BackendQueueProcessor
+  heartbeatAutomationScheduler: HeartbeatAutomationScheduler
 }
 
 const SHARED_BRIDGE_KEY = '__codexRemoteSharedBridge__'
@@ -5351,18 +5585,21 @@ function getSharedBridgeState(): SharedBridgeState {
     }
     existing.appServer.dispose()
     existing.backendQueueProcessor?.dispose()
+    existing.heartbeatAutomationScheduler?.dispose()
     existing.terminalManager?.dispose()
   }
 
   const appServer = new AppServerProcess()
   const terminalManager = new ThreadTerminalManager()
   const backendQueueProcessor = new BackendQueueProcessor(appServer)
+  const heartbeatAutomationScheduler = new HeartbeatAutomationScheduler(backendQueueProcessor)
   const created: SharedBridgeState = {
     version: SHARED_BRIDGE_VERSION,
     appServer,
     terminalManager,
     methodCatalog: new MethodCatalog(),
     backendQueueProcessor,
+    heartbeatAutomationScheduler,
     telegramBridge: new TelegramThreadBridge(appServer, {
       onChatSeen: (chatId) => {
         void rememberTelegramChatId(chatId).catch(() => {})

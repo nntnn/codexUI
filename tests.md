@@ -271,6 +271,39 @@ This file tracks manual regression and feature verification steps.
 
 ---
 
+### Thread heartbeat automations run from schedule
+
+#### Feature/Change Name
+Thread heartbeat automations compute local-clock RRULE due times, enqueue due runs from the server, and allow queued turns to start on idle `active` threads.
+
+#### Prerequisites/Setup
+1. Dev server or installed `codexapp.service` running.
+2. At least one saved thread automation under `$CODEX_HOME/automations/<id>/automation.toml`.
+3. Light theme and dark theme both available from the appearance switcher.
+
+#### Steps
+1. In light theme, create or edit a thread automation with `Daily` at a near-future local time.
+2. Confirm the sidebar row shows a concrete `Next run` timestamp instead of `Not scheduled`.
+3. Wait until the scheduled minute passes.
+4. Confirm `/codex-api/thread-queue-state` receives a heartbeat message for that automation.
+5. Confirm an idle thread with `status.type = active` starts the queued automation turn instead of leaving the heartbeat stuck in the queue.
+6. Use `Run now` from the automation manager and confirm it also queues and drains.
+7. Switch to dark theme and repeat steps 1, 2, and 6 to confirm the automation manager remains readable and usable.
+
+#### Expected Results
+- RRULEs such as `FREQ=DAILY;BYHOUR=9;BYMINUTE=0` produce a local-clock next run.
+- Due scheduled automations are enqueued by the server poller.
+- The scheduler does not enqueue duplicate heartbeat runs when the same automation is already queued.
+- Idle `active` threads are treated as startable; only `inProgress` and `running` thread statuses block queue drain.
+- Manual `Run now` keeps working.
+- The dialog and schedule preview remain readable in light theme and dark theme.
+
+#### Rollback/Cleanup
+- Remove disposable test automations from `$CODEX_HOME/automations/<id>`.
+- Clear any disposable queued heartbeat messages through `/codex-api/thread-queue-state` if they were created for testing only.
+
+---
+
 ### Pinned threads remain visible during background pagination
 
 #### Feature/Change Name
