@@ -8,6 +8,7 @@ import type {
 } from '../appServerDtos'
 import type {
   CommandExecutionData,
+  CommandOutputBlockData,
   UiFileAttachment,
   UiFileChange,
   UiFileChangeStatus,
@@ -494,13 +495,14 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
     const cwd = typeof raw.cwd === 'string' ? raw.cwd : null
     const aggregatedOutput = typeof raw.aggregatedOutput === 'string' ? raw.aggregatedOutput : ''
     const exitCode = typeof raw.exitCode === 'number' ? raw.exitCode : null
+    const outputBlock = normalizeCommandOutputBlock(raw.outputBlock)
     return [
       {
         id: item.id,
         role: 'system' as const,
         text: cmd,
         messageType: 'commandExecution',
-        commandExecution: { command: cmd, cwd, status, aggregatedOutput, exitCode },
+        commandExecution: { command: cmd, cwd, status, aggregatedOutput, exitCode, outputBlock },
       },
     ]
   }
@@ -530,6 +532,25 @@ function normalizeCommandStatus(value: unknown): CommandExecutionData['status'] 
   if (value === 'completed' || value === 'failed' || value === 'declined' || value === 'interrupted') return value
   if (value === 'inProgress' || value === 'in_progress') return 'inProgress'
   return 'completed'
+}
+
+function normalizeCommandOutputBlock(value: unknown): CommandOutputBlockData | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const record = value as Record<string, unknown>
+  const blockId = typeof record.blockId === 'string' ? record.blockId : ''
+  const itemId = typeof record.itemId === 'string' ? record.itemId : ''
+  const digest = typeof record.digest === 'string' ? record.digest : ''
+  const fullBytes = typeof record.fullBytes === 'number' && Number.isFinite(record.fullBytes) ? record.fullBytes : 0
+  const previewBytes = typeof record.previewBytes === 'number' && Number.isFinite(record.previewBytes) ? record.previewBytes : 0
+  if (!blockId || !itemId || !/^[a-f0-9]{40}$/u.test(digest)) return null
+  return {
+    blockId,
+    itemId,
+    digest,
+    truncated: record.truncated === true,
+    fullBytes: Math.max(0, Math.floor(fullBytes)),
+    previewBytes: Math.max(0, Math.floor(previewBytes)),
+  }
 }
 
 function pickThreadName(summary: Thread): string {

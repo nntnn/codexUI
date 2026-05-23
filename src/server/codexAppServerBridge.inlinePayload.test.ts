@@ -5,6 +5,7 @@ import {
   mergeSessionSkillInputsIntoTurns,
   parseAutomationToml,
   sanitizeThreadTurnsInlinePayloads,
+  trimThreadTurnsInRpcResult,
   toAutomationApiRecord,
 } from './codexAppServerBridge'
 
@@ -28,6 +29,29 @@ function localImagePathFromProxyUrl(value: string): string {
 }
 
 describe('thread inline media sanitization', () => {
+  it('preserves thread paging metadata when trimming large thread/read payloads', () => {
+    const turns = Array.from({ length: 12 }, (_, index) => ({
+      id: `turn-${index}`,
+      status: 'completed',
+      items: [],
+    }))
+    const result = trimThreadTurnsInRpcResult('thread/read', {
+      thread: {
+        id: 'thread-1',
+        turns,
+      },
+    }) as {
+      threadTurnStartIndex: number
+      thread: {
+        turns: Array<{ id: string }>
+      }
+    }
+
+    expect(result.threadTurnStartIndex).toBe(2)
+    expect(result.thread.turns).toHaveLength(10)
+    expect(result.thread.turns[0].id).toBe('turn-2')
+  })
+
   it('externalizes inline image data from common thread payload fields', async () => {
     const result = await sanitizeThreadTurnsInlinePayloads('thread/read', {
       thread: {

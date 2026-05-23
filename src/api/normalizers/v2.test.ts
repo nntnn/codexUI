@@ -106,6 +106,49 @@ Reply with &lt;/instructions&gt; and A &amp; B
     })
   })
 
+  it('preserves command output block metadata for lazy full-output loading', () => {
+    const outputBlock = {
+      blockId: 'block-1',
+      itemId: 'cmd-1',
+      digest: '0123456789abcdef0123456789abcdef01234567',
+      truncated: true,
+      fullBytes: 200000,
+      previewBytes: 1000,
+      loaded: true,
+      loading: true,
+      error: true,
+    }
+    const commandItem = {
+      type: 'commandExecution',
+      id: 'cmd-1',
+      command: 'pnpm test',
+      cwd: '/tmp/project',
+      processId: null,
+      status: 'completed',
+      commandActions: [],
+      aggregatedOutput: 'preview',
+      exitCode: 0,
+      durationMs: null,
+      outputBlock,
+    } as ThreadReadResponse['thread']['turns'][number]['items'][number]
+
+    const messages = normalizeThreadMessagesV2(threadReadResponseWithContent([commandItem]))
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].commandExecution?.outputBlock).not.toBe(outputBlock)
+    expect(messages[0].commandExecution?.outputBlock).toMatchObject({
+      blockId: 'block-1',
+      itemId: 'cmd-1',
+      truncated: true,
+      fullBytes: 200000,
+    })
+    expect(messages[0].commandExecution?.outputBlock).not.toMatchObject({
+      loaded: true,
+      loading: true,
+      error: true,
+    })
+  })
+
   it('renders failed turn errors as chat system messages', () => {
     const response = threadReadResponseWithContent([{
       type: 'userMessage',
