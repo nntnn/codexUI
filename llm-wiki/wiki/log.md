@@ -1,5 +1,11 @@
 # Log
 
+## [2026-05-23] ingest | local markdown viewer attachment review
+- Added source: `raw/features/local-markdown-viewer-attachment-review.md`.
+- Created wiki page: `concepts/local-markdown-viewer.md`.
+- Documents: recommended `/codex-local-browse/*` attachment point, tradeoffs against extracting chat markdown rendering or adding a Vue route, security constraints, mobile/desktop UX shape, and verification coverage.
+- Updated `overview.md`, `entities/codex-web-local.md`, and `index.md`.
+
 ## [2026-05-02] ingest | Directory Hub Composio and Skills search
 - Added source: `raw/features/directory-hub-composio-skills-search.md`.
 - Created wiki page: `concepts/directory-hub-composio-skills.md`.
