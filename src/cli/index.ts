@@ -499,6 +499,7 @@ async function startServer(options: {
   tunnel: boolean
   open: boolean
   login: boolean
+  memories: boolean
   sandboxMode?: string
   approvalPolicy?: string
   projectPath?: string
@@ -528,7 +529,10 @@ async function startServer(options: {
     console.log('\nCodex is not logged in. You can log in later via settings or run `codexui login`.\n')
   }
   const requestedPort = parseInt(options.port, 10)
-  const passwordResolution = resolvePassword(options.password)
+  const passwordInput = typeof options.password === 'string' || options.password === false
+    ? options.password
+    : (process.env.CODEXAPP_PASSWORD?.trim() || options.password)
+  const passwordResolution = resolvePassword(passwordInput)
   const password = passwordResolution.password
   const generatedPasswordPath = password && passwordResolution.generated
     ? await persistGeneratedPassword(password)
@@ -537,6 +541,7 @@ async function startServer(options: {
   const server = createServer(app)
   attachWebSocket(server)
   const port = await listenWithFallback(server, requestedPort)
+  process.env.CODEXUI_SERVER_PORT = String(port)
   let tunnelChild: ReturnType<typeof spawn> | null = null
   let tunnelUrl: string | null = null
 
@@ -636,6 +641,8 @@ program
   .option('--no-open', 'do not open browser on startup')
   .option('--login', 'run automatic Codex login bootstrap', true)
   .option('--no-login', 'skip automatic Codex login bootstrap')
+  .option('--memories', 'enable Codex memories for spawned app-server processes', true)
+  .option('--no-memories', 'disable Codex memories for spawned app-server processes')
   .option('--sandbox-mode <mode>', 'Codex sandbox mode: read-only, workspace-write, danger-full-access')
   .option('--approval-policy <policy>', 'Codex approval policy: untrusted, on-failure, on-request, never')
   .action(async (
@@ -646,6 +653,7 @@ program
       tunnel: boolean
       open: boolean
       login: boolean
+      memories: boolean
       sandboxMode?: string
       approvalPolicy?: string
       openProject?: string
@@ -659,7 +667,16 @@ program
       || arg.startsWith('--tunnel=')
       || arg.startsWith('--no-tunnel=')
     ))
+    const memoriesFlagExplicit = rawArgv.some((arg) => (
+      arg === '--memories'
+      || arg === '--no-memories'
+      || arg.startsWith('--memories=')
+      || arg.startsWith('--no-memories=')
+    ))
     const effectiveTunnel = tunnelFlagExplicit ? opts.tunnel : hasDetectedTailscaleIp()
+    if (memoriesFlagExplicit) {
+      process.env.CODEXUI_MEMORIES = opts.memories ? 'true' : 'false'
+    }
 
     let openProjectOnly = (opts.openProject ?? '').trim()
     if (!openProjectOnly && openProjectFlagIndex >= 0 && projectPath?.trim()) {

@@ -86,6 +86,7 @@ export type UiThreadAutomation = {
   rrule: string
   status: UiThreadAutomationStatus
   targetThreadId: string | null
+  cwds: string[]
   createdAtMs: number | null
   updatedAtMs: number | null
   nextRunAtMs: number | null
@@ -97,6 +98,19 @@ export type CommandExecutionData = {
   status: 'inProgress' | 'completed' | 'failed' | 'declined' | 'interrupted'
   aggregatedOutput: string
   exitCode: number | null
+  outputBlock?: CommandOutputBlockData | null
+}
+
+export type CommandOutputBlockData = {
+  blockId: string
+  itemId: string
+  digest: string
+  truncated: boolean
+  fullBytes: number
+  previewBytes: number
+  loaded?: boolean
+  loading?: boolean
+  error?: boolean
 }
 
 export type UiFileAttachment = { label: string; path: string }
@@ -111,8 +125,7 @@ export type UiFileChange = {
   removedLineCount: number
 }
 
-export type UiReviewTab = 'changes' | 'findings'
-export type UiReviewScope = 'workspace' | 'baseBranch'
+export type UiReviewScope = 'workspace' | 'baseBranch' | 'commit'
 export type UiReviewWorkspaceView = 'unstaged' | 'staged'
 export type UiReviewAction = 'stage' | 'unstage' | 'revert'
 export type UiReviewActionLevel = 'all' | 'file' | 'hunk'
@@ -160,6 +173,7 @@ export type UiReviewSnapshot = {
   workspaceView: UiReviewWorkspaceView
   baseBranch: string | null
   baseBranchOptions: string[]
+  commitSha: string | null
   headBranch: string | null
   mergeBaseSha: string | null
   generatedAtIso: string
@@ -170,6 +184,8 @@ export type UiReviewSnapshot = {
   }
   files: UiReviewFile[]
 }
+
+export type UiReviewSummary = UiReviewSnapshot['summary']
 
 export type UiReviewFinding = {
   id: string
@@ -297,6 +313,8 @@ export type UiAccountUnavailableReason = 'payment_required'
 
 export type UiAccountEntry = {
   accountId: string
+  storageId: string
+  userId: string | null
   authMode: string | null
   email: string | null
   planType: string | null
