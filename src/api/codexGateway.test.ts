@@ -181,7 +181,13 @@ describe('getThreadDetail', () => {
   })
 
   it('reads modelProvider from nested thread payloads returned by thread/read', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith('/codex-api/thread-live-state')) {
+        return new Response(JSON.stringify({ error: 'not available' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       const body = typeof init?.body === 'string'
         ? JSON.parse(init.body) as { method: string; params: Record<string, unknown> }
         : { method: '', params: {} }
@@ -203,6 +209,121 @@ describe('getThreadDetail', () => {
     await expect(getThreadDetail('legacy-thread')).resolves.toMatchObject({
       modelProvider: 'opencode_zen',
     })
+  })
+
+  it('uses live-state payloads without dropping provider metadata', async () => {
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      requests.push(String(input))
+      if (String(input).startsWith('/codex-api/thread-live-state')) {
+        return new Response(JSON.stringify({
+          model: 'gpt-5.5',
+          thread: {
+            id: 'thread-1',
+            modelProvider: 'opencode_zen',
+            turns: [{
+              id: 'turn-1',
+              status: 'completed',
+              items: [{
+                id: 'msg-1',
+                type: 'agentMessage',
+                text: 'from live-state',
+              }],
+            }],
+          },
+          isInProgress: false,
+        }), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Codex-Live-State-Digest': '0123456789abcdef0123456789abcdef01234567',
+          },
+        })
+      }
+      throw new Error(`unexpected request ${String(input)}`)
+    }))
+
+    await expect(getThreadDetail('thread-1')).resolves.toMatchObject({
+      model: 'gpt-5.5',
+      modelProvider: 'opencode_zen',
+      messages: [expect.objectContaining({ text: 'from live-state' })],
+    })
+    expect(requests).toEqual(['/codex-api/thread-live-state?threadId=thread-1'])
+  })
+
+  it('preserves live-state turn paging metadata for older-message loading', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith('/codex-api/thread-live-state')) {
+        return new Response(JSON.stringify({
+          threadTurnStartIndex: 42,
+          thread: {
+            id: 'thread-paged',
+            modelProvider: 'openai',
+            turns: [{
+              id: 'turn-42',
+              status: 'completed',
+              items: [{ id: 'msg-42', type: 'agentMessage', text: 'paged live-state' }],
+            }],
+          },
+          isInProgress: false,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`unexpected request ${String(input)}`)
+    }))
+
+    await expect(getThreadDetail('thread-paged')).resolves.toMatchObject({
+      hasMoreOlder: true,
+      turnIndexByTurnId: { 'turn-42': 42 },
+      messages: [expect.objectContaining({ text: 'paged live-state', turnIndex: 42 })],
+    })
+  })
+
+  it('reuses cached live-state payloads on 204 responses', async () => {
+    let liveStateRequestCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).startsWith('/codex-api/thread-live-state')) {
+        liveStateRequestCount += 1
+        if (liveStateRequestCount === 1) {
+          return new Response(JSON.stringify({
+            model: 'gpt-5.5',
+            thread: {
+              id: 'thread-204',
+              modelProvider: 'opencode_zen',
+              turns: [{
+                id: 'turn-1',
+                status: 'completed',
+                items: [{ id: 'msg-1', type: 'agentMessage', text: 'cached live-state' }],
+              }],
+            },
+            isInProgress: false,
+          }), {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Codex-Live-State-Digest': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            },
+          })
+        }
+        return new Response(null, {
+          status: 204,
+          headers: { 'X-Codex-Live-State-Digest': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+        })
+      }
+      throw new Error(`unexpected request ${String(input)}`)
+    }))
+
+    await expect(getThreadDetail('thread-204')).resolves.toMatchObject({
+      modelProvider: 'opencode_zen',
+      messages: [expect.objectContaining({ text: 'cached live-state' })],
+    })
+    await expect(getThreadDetail('thread-204')).resolves.toMatchObject({
+      modelProvider: 'opencode_zen',
+      messages: [expect.objectContaining({ text: 'cached live-state' })],
+    })
+    expect(liveStateRequestCount).toBe(2)
   })
 })
 

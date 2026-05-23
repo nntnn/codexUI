@@ -98,6 +98,19 @@ export type CommandExecutionData = {
   status: 'inProgress' | 'completed' | 'failed' | 'declined' | 'interrupted'
   aggregatedOutput: string
   exitCode: number | null
+  outputBlock?: CommandOutputBlockData | null
+}
+
+export type CommandOutputBlockData = {
+  blockId: string
+  itemId: string
+  digest: string
+  truncated: boolean
+  fullBytes: number
+  previewBytes: number
+  loaded?: boolean
+  loading?: boolean
+  error?: boolean
 }
 
 export type UiFileAttachment = { label: string; path: string }

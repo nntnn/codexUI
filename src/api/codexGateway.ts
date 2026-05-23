@@ -421,6 +421,21 @@ type ThreadFileChangeFallbackEntry = {
 
 type ThreadTurnIndexById = Record<string, number>
 
+type LiveStatePayload = ThreadReadResponse & {
+  liveStateError?: unknown
+  isInProgress?: boolean
+}
+
+type LiveStateCacheEntry = {
+  digest: string
+  payload: LiveStatePayload
+  expiresAt: number
+}
+
+const LIVE_STATE_RESPONSE_CACHE_TTL_MS = 30_000
+const LIVE_STATE_RESPONSE_CACHE_MAX_ENTRIES = 4
+const liveStateResponseCache = new Map<string, LiveStateCacheEntry>()
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -753,6 +768,51 @@ async function getThreadMessagesV2(threadId: string): Promise<UiMessage[]> {
   return normalizeThreadMessagesV2(payload, readThreadTurnStartIndex(payload))
 }
 
+function pruneLiveStateResponseCache(now = Date.now()): void {
+  for (const [key, entry] of liveStateResponseCache.entries()) {
+    if (entry.expiresAt <= now) liveStateResponseCache.delete(key)
+  }
+  while (liveStateResponseCache.size > LIVE_STATE_RESPONSE_CACHE_MAX_ENTRIES) {
+    const firstKey = liveStateResponseCache.keys().next().value
+    if (typeof firstKey !== 'string') break
+    liveStateResponseCache.delete(firstKey)
+  }
+}
+
+async function fetchThreadLiveState(threadId: string): Promise<LiveStatePayload | null> {
+  pruneLiveStateResponseCache()
+  const cached = liveStateResponseCache.get(threadId)
+  const headers = cached?.digest
+    ? { 'X-Codex-Live-State-Digest': cached.digest }
+    : undefined
+  const response = await fetch(
+    `/codex-api/thread-live-state?threadId=${encodeURIComponent(threadId)}`,
+    headers ? { headers } : undefined,
+  )
+
+  if (response.status === 204 && cached?.payload) {
+    cached.expiresAt = Date.now() + LIVE_STATE_RESPONSE_CACHE_TTL_MS
+    liveStateResponseCache.delete(threadId)
+    liveStateResponseCache.set(threadId, cached)
+    return cached.payload
+  }
+  if (response.status === 204) return null
+  if (!response.ok) return null
+
+  const payload = (await response.json()) as LiveStatePayload
+  const digest = response.headers.get('x-codex-live-state-digest') ?? ''
+  if (/^[a-f0-9]{40}$/u.test(digest) && !payload.liveStateError) {
+    liveStateResponseCache.delete(threadId)
+    liveStateResponseCache.set(threadId, {
+      digest,
+      payload,
+      expiresAt: Date.now() + LIVE_STATE_RESPONSE_CACHE_TTL_MS,
+    })
+    pruneLiveStateResponseCache()
+  }
+  return payload
+}
+
 async function getThreadSummaryV2(threadId: string): Promise<UiThread> {
   const payload = await callRpc<ThreadReadResponse>('thread/read', {
     threadId,
@@ -770,17 +830,20 @@ async function getThreadDetailV2(threadId: string): Promise<{
   hasMoreOlder: boolean
   turnIndexByTurnId: ThreadTurnIndexById
 }> {
-  const payload = await callRpc<ThreadReadResponse>('thread/read', {
-    threadId,
-    includeTurns: true,
-  })
+  const liveState = await fetchThreadLiveState(threadId).catch(() => null)
+  const payload = liveState && !liveState.liveStateError && liveState.thread
+    ? liveState
+    : await callRpc<ThreadReadResponse>('thread/read', {
+      threadId,
+      includeTurns: true,
+    })
   const startTurnIndex = readThreadTurnStartIndex(payload)
   const normalized = normalizeThreadMessagesV2(payload, startTurnIndex)
   return {
     model: normalizeThreadModelFromPayload(payload),
     modelProvider: normalizeThreadModelProviderFromPayload(payload),
     messages: normalized,
-    inProgress: readThreadInProgressFromResponse(payload),
+    inProgress: liveState?.isInProgress === true || readThreadInProgressFromResponse(payload),
     activeTurnId: readActiveTurnIdFromResponse(payload),
     hasMoreOlder: startTurnIndex > 0,
     turnIndexByTurnId: buildTurnIndexByTurnId(payload, startTurnIndex),
@@ -878,6 +941,30 @@ export async function getOlderThreadMessages(threadId: string, beforeTurnId: str
   } catch (error) {
     throw normalizeCodexApiError(error, `Failed to load earlier messages for thread ${threadId}`, 'thread/read')
   }
+}
+
+export async function getThreadCommandOutputBlock(params: {
+  threadId: string
+  blockId: string
+  itemId: string
+  digest: string
+}): Promise<{ output: string; bytes: number }> {
+  const query = new URLSearchParams({
+    threadId: params.threadId,
+    blockId: params.blockId,
+    itemId: params.itemId,
+    digest: params.digest,
+  })
+  const response = await fetch(`/codex-api/thread-command-output?${query.toString()}`)
+  const payload = (await response.json()) as unknown
+  const envelope = asRecord(payload)
+  const data = asRecord(envelope?.data)
+  const output = typeof data?.output === 'string' ? data.output : null
+  const bytes = typeof data?.bytes === 'number' && Number.isFinite(data.bytes) ? Math.max(0, Math.floor(data.bytes)) : null
+  if (!response.ok || output === null || bytes === null) {
+    throw new Error(getErrorMessageFromPayload(payload, 'Failed to load command output'))
+  }
+  return { output, bytes }
 }
 
 function normalizeReviewLine(value: unknown): UiReviewLine | null {
