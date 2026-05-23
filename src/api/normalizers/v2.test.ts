@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeThreadMessagesV2, readThreadInProgressFromResponse } from './v2'
+import { normalizeThreadMessagesV2, normalizeThreadSummaryV2, readThreadInProgressFromResponse } from './v2'
 import type { ThreadReadResponse } from '../appServerDtos'
 
 function threadReadResponseWithContent(content: ThreadReadResponse['thread']['turns'][number]['items'][number][]): ThreadReadResponse {
@@ -182,5 +182,48 @@ describe('readThreadInProgressFromResponse', () => {
     ;(response.thread as unknown as { status: { type: string } }).status = { type: 'active' }
 
     expect(readThreadInProgressFromResponse(response)).toBe(true)
+  })
+})
+
+describe('command output blocks', () => {
+  it('keeps command output block metadata for lazy full-output loading', () => {
+    const messages = normalizeThreadMessagesV2(threadReadResponseWithContent([{
+      type: 'commandExecution',
+      id: 'cmd-1',
+      command: 'pnpm test',
+      cwd: '/tmp/project',
+      status: 'completed',
+      aggregatedOutput: 'preview',
+      exitCode: 0,
+      outputBlock: {
+        blockId: 'block-1',
+        itemId: 'cmd-1',
+        digest: 'a'.repeat(40),
+        truncated: true,
+        fullBytes: 65536,
+        previewBytes: 8192,
+      },
+    } as unknown as ThreadReadResponse['thread']['turns'][number]['items'][number]]))
+
+    expect(messages[0]?.commandExecution?.outputBlock).toMatchObject({
+      blockId: 'block-1',
+      itemId: 'cmd-1',
+      digest: 'a'.repeat(40),
+      truncated: true,
+      fullBytes: 65536,
+      previewBytes: 8192,
+    })
+  })
+})
+
+describe('normalizeThreadSummaryV2', () => {
+  it('prefers a generated title over a stale thread name', () => {
+    const response = threadReadResponseWithContent([]) as ThreadReadResponse & {
+      thread: ThreadReadResponse['thread'] & { name?: string; title?: string }
+    }
+    response.thread.name = 'Stale first prompt title'
+    response.thread.title = 'Generated completed conversation title'
+
+    expect(normalizeThreadSummaryV2(response).title).toBe('Generated completed conversation title')
   })
 })

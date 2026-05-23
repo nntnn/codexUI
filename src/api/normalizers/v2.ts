@@ -8,6 +8,7 @@ import type {
 } from '../appServerDtos'
 import type {
   CommandExecutionData,
+  CommandOutputBlockData,
   UiFileAttachment,
   UiFileChange,
   UiFileChangeStatus,
@@ -219,6 +220,37 @@ function parsePlanText(value: string): UiPlanData | null {
   return {
     explanation: explanationLines.join('\n').trim() || undefined,
     steps,
+  }
+}
+
+function normalizeCommandOutputBlock(value: unknown): CommandOutputBlockData | null {
+  const record = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+  if (!record) return null
+
+  const blockId = typeof record.blockId === 'string' ? record.blockId.trim() : ''
+  const itemId = typeof record.itemId === 'string' ? record.itemId.trim() : ''
+  const digest = typeof record.digest === 'string' ? record.digest.trim() : ''
+  const fullBytes = typeof record.fullBytes === 'number' && Number.isFinite(record.fullBytes)
+    ? Math.max(0, Math.floor(record.fullBytes))
+    : -1
+  const previewBytes = typeof record.previewBytes === 'number' && Number.isFinite(record.previewBytes)
+    ? Math.max(0, Math.floor(record.previewBytes))
+    : -1
+
+  if (!blockId || !itemId || !/^[a-f0-9]{40}$/u.test(digest) || fullBytes < 0 || previewBytes < 0) return null
+
+  return {
+    blockId,
+    itemId,
+    digest,
+    truncated: record.truncated === true,
+    fullBytes,
+    previewBytes,
+    loaded: record.loaded === true || undefined,
+    loading: record.loading === true || undefined,
+    error: record.error === true || undefined,
   }
 }
 
@@ -494,13 +526,14 @@ function toUiMessages(item: ThreadItem): UiMessage[] {
     const cwd = typeof raw.cwd === 'string' ? raw.cwd : null
     const aggregatedOutput = typeof raw.aggregatedOutput === 'string' ? raw.aggregatedOutput : ''
     const exitCode = typeof raw.exitCode === 'number' ? raw.exitCode : null
+    const outputBlock = normalizeCommandOutputBlock(raw.outputBlock)
     return [
       {
         id: item.id,
         role: 'system' as const,
         text: cmd,
         messageType: 'commandExecution',
-        commandExecution: { command: cmd, cwd, status, aggregatedOutput, exitCode },
+        commandExecution: { command: cmd, cwd, status, aggregatedOutput, exitCode, ...(outputBlock ? { outputBlock } : null) },
       },
     ]
   }
@@ -535,8 +568,8 @@ function normalizeCommandStatus(value: unknown): CommandExecutionData['status'] 
 function pickThreadName(summary: Thread): string {
   const rawSummary = summary as Record<string, unknown>
   const direct = [
-    rawSummary.name,
     rawSummary.title,
+    rawSummary.name,
     summary.preview,
   ]
   for (const candidate of direct) {

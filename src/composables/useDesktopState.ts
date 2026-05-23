@@ -603,7 +603,33 @@ function reorderStringArray(items: string[], fromIndex: number, toIndex: number)
 function areCommandExecutionsEqual(first?: CommandExecutionData, second?: CommandExecutionData): boolean {
   if (!first && !second) return true
   if (!first || !second) return false
-  return first.status === second.status && first.aggregatedOutput === second.aggregatedOutput && first.exitCode === second.exitCode
+  const firstBlock = first.outputBlock
+  const secondBlock = second.outputBlock
+  const sameBlockIdentity =
+    firstBlock?.blockId === secondBlock?.blockId &&
+    firstBlock?.itemId === secondBlock?.itemId &&
+    firstBlock?.digest === secondBlock?.digest
+  if (
+    firstBlock?.loaded === true &&
+    secondBlock?.truncated === true &&
+    sameBlockIdentity &&
+    first.status === second.status &&
+    first.exitCode === second.exitCode
+  ) {
+    return true
+  }
+  const sameBlock =
+    sameBlockIdentity &&
+    firstBlock?.truncated === secondBlock?.truncated &&
+    firstBlock?.fullBytes === secondBlock?.fullBytes &&
+    firstBlock?.previewBytes === secondBlock?.previewBytes &&
+    firstBlock?.loaded === secondBlock?.loaded &&
+    firstBlock?.loading === secondBlock?.loading &&
+    firstBlock?.error === secondBlock?.error
+  return first.status === second.status &&
+    first.aggregatedOutput === second.aggregatedOutput &&
+    first.exitCode === second.exitCode &&
+    sameBlock
 }
 
 function arePlanStepsEqual(first: UiPlanStep[] = [], second: UiPlanStep[] = []): boolean {

@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   BackendQueueProcessor,
+  computeHeartbeatAutomationSchedule,
+  isThreadStatusBusyForQueuedTurn,
   mergeSessionSkillInputsIntoTurns,
   parseAutomationToml,
   sanitizeThreadTurnsInlinePayloads,
@@ -354,6 +356,12 @@ describe('thread session skill recovery', () => {
 })
 
 describe('backend queue scheduling', () => {
+  it('does not treat idle active threads as busy for queued turns', () => {
+    expect(isThreadStatusBusyForQueuedTurn('active')).toBe(false)
+    expect(isThreadStatusBusyForQueuedTurn('inProgress')).toBe(true)
+    expect(isThreadStatusBusyForQueuedTurn('running')).toBe(true)
+  })
+
   it('reschedules a pending drain when a run-now request needs an earlier drain', async () => {
     vi.useFakeTimers()
     const processor = new BackendQueueProcessor({
@@ -374,6 +382,36 @@ describe('backend queue scheduling', () => {
     expect(processThreadQueue).toHaveBeenCalledTimes(1)
 
     processor.dispose()
+    vi.useRealTimers()
+  })
+
+  it('computes due daily heartbeat automations from local clock RRULEs', () => {
+    const createdAtMs = new Date(2026, 4, 11, 17, 49, 0, 0).getTime()
+    const nowMs = new Date(2026, 4, 12, 9, 5, 0, 0).getTime()
+
+    const schedule = computeHeartbeatAutomationSchedule({
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      status: 'ACTIVE',
+      createdAtMs,
+    }, null, nowMs)
+
+    expect(schedule.dueRunAtMs).toBe(new Date(2026, 4, 12, 9, 0, 0, 0).getTime())
+    expect(schedule.nextRunAtMs).toBe(new Date(2026, 4, 13, 9, 0, 0, 0).getTime())
+  })
+
+  it('does not return a duplicate due run after the scheduled fire was queued', () => {
+    const createdAtMs = new Date(2026, 4, 11, 17, 49, 0, 0).getTime()
+    const lastQueuedAtMs = new Date(2026, 4, 12, 9, 0, 0, 0).getTime()
+    const nowMs = new Date(2026, 4, 12, 9, 5, 0, 0).getTime()
+
+    const schedule = computeHeartbeatAutomationSchedule({
+      rrule: 'FREQ=DAILY;BYHOUR=9;BYMINUTE=0',
+      status: 'ACTIVE',
+      createdAtMs,
+    }, lastQueuedAtMs, nowMs)
+
+    expect(schedule.dueRunAtMs).toBeNull()
+    expect(schedule.nextRunAtMs).toBe(new Date(2026, 4, 13, 9, 0, 0, 0).getTime())
   })
 })
 

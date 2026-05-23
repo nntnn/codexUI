@@ -13,6 +13,7 @@ import {
   isThreadMaterializationPendingError,
   isThreadNotFoundError,
   isUnauthenticatedRateLimitError,
+  mergeThreadTitleCaches,
   writeFreeModeStateFile,
   writeWorkspaceRootsState,
 } from './codexAppServerBridge'
@@ -26,7 +27,6 @@ afterEach(() => {
     process.env.CODEX_HOME = originalCodexHome
   }
 })
-
 describe('callRpcWithArchiveRecovery', () => {
   it('sets a fallback name and retries archive when Codex has not materialized a rollout', async () => {
     const calls: Array<{ method: string; params: unknown }> = []
@@ -507,5 +507,29 @@ describe('ensureDefaultFreeModeStateForMissingAuthSync', () => {
     } finally {
       await rm(codexHome, { recursive: true, force: true })
     }
+  })
+})
+
+describe('mergeThreadTitleCaches', () => {
+  it('lets the overlay title override stale base titles while preserving order', () => {
+    const merged = mergeThreadTitleCaches(
+      {
+        titles: {
+          'thread-1': 'Session index title',
+          'thread-2': 'Only in session index',
+        },
+        order: ['thread-1', 'thread-2'],
+      },
+      {
+        titles: {
+          'thread-1': 'Persisted generated title',
+          'thread-3': 'Only persisted',
+        },
+        order: ['thread-3', 'thread-1'],
+      },
+    )
+
+    expect(merged.titles['thread-1']).toBe('Persisted generated title')
+    expect(merged.order.slice(0, 3)).toEqual(['thread-3', 'thread-1', 'thread-2'])
   })
 })
