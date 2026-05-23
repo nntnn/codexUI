@@ -4611,7 +4611,7 @@ function normalizeThreadQueueState(value: unknown): ThreadQueueState {
   return state
 }
 
-let threadQueueMutationChain: Promise<unknown> = Promise.resolve()
+let globalStateMutationChain: Promise<unknown> = Promise.resolve()
 
 async function readThreadQueueState(): Promise<ThreadQueueState> {
   const statePath = getCodexGlobalStatePath()
@@ -4642,17 +4642,21 @@ async function writeThreadQueueStateUnlocked(nextState: ThreadQueueState): Promi
   await writeFile(statePath, JSON.stringify(payload), 'utf8')
 }
 
+async function withGlobalStateMutation<T>(mutation: () => Promise<T>): Promise<T> {
+  const run = globalStateMutationChain.then(mutation)
+  globalStateMutationChain = run.catch(() => {})
+  return run
+}
+
 async function withThreadQueueStateUpdate<T>(
   update: (state: ThreadQueueState) => ThreadQueueStateUpdate<T> | Promise<ThreadQueueStateUpdate<T>>,
 ): Promise<T> {
-  const run = threadQueueMutationChain.then(async () => {
+  return withGlobalStateMutation(async () => {
     const currentState = await readThreadQueueState()
     const { nextState, result } = await update(currentState)
     await writeThreadQueueStateUnlocked(nextState)
     return result
   })
-  threadQueueMutationChain = run.catch(() => {})
-  return run
 }
 
 async function writeThreadQueueState(nextState: ThreadQueueState): Promise<void> {
@@ -4690,22 +4694,29 @@ async function readAutomationSchedulerState(): Promise<AutomationSchedulerState>
 }
 
 async function writeAutomationSchedulerState(nextState: AutomationSchedulerState): Promise<void> {
-  const statePath = getCodexGlobalStatePath()
-  let payload: Record<string, unknown> = {}
-  try {
-    const raw = await readFile(statePath, 'utf8')
-    payload = asRecord(JSON.parse(raw)) ?? {}
-  } catch {
-    payload = {}
-  }
+  await withGlobalStateMutation(async () => {
+    const statePath = getCodexGlobalStatePath()
+    let payload: Record<string, unknown> = {}
+    try {
+      const raw = await readFile(statePath, 'utf8')
+      payload = asRecord(JSON.parse(raw)) ?? {}
+    } catch {
+      payload = {}
+    }
 
-  const normalized = normalizeAutomationSchedulerState(nextState)
-  if (Object.keys(normalized).length > 0) {
-    payload[AUTOMATION_SCHEDULER_STATE_KEY] = normalized
-  } else {
-    delete payload[AUTOMATION_SCHEDULER_STATE_KEY]
-  }
-  await writeFile(statePath, JSON.stringify(payload), 'utf8')
+    const normalized = normalizeAutomationSchedulerState(nextState)
+    if (Object.keys(normalized).length > 0) {
+      payload[AUTOMATION_SCHEDULER_STATE_KEY] = normalized
+    } else {
+      delete payload[AUTOMATION_SCHEDULER_STATE_KEY]
+    }
+    await writeFile(statePath, JSON.stringify(payload), 'utf8')
+  })
+}
+
+export const __codexGlobalStateForTests = {
+  writeAutomationSchedulerState,
+  writeThreadQueueState,
 }
 
 async function appendThreadQueuedMessage(threadId: string, message: StoredQueuedMessage): Promise<void> {

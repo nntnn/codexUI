@@ -7,6 +7,7 @@ import {
   callRpcWithArchiveRecovery,
   canonicalizeThreadListResponseForRead,
   canonicalizeWorkspaceRootsStateForRead,
+  __codexGlobalStateForTests,
   ensureDefaultFreeModeStateForMissingAuthSync,
   hasUsableCodexAuth,
   isEmptyThreadReadError,
@@ -233,6 +234,48 @@ describe('writeWorkspaceRootsState', () => {
       expect(rawState['electron-workspace-root-labels']).toEqual({
         [canonicalRoot]: 'Canonical Demo',
         'remote-project-id': 'Remote Demo',
+      })
+    } finally {
+      await rm(codexHome, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('codex global state persistence', () => {
+  it('preserves queue and automation scheduler keys across concurrent writes', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'codex-home-global-state-'))
+    process.env.CODEX_HOME = codexHome
+
+    try {
+      await Promise.all([
+        __codexGlobalStateForTests.writeThreadQueueState({
+          'thread-1': [{
+            id: 'queued-1',
+            text: 'queued message',
+            imageUrls: [],
+            skills: [],
+            fileAttachments: [],
+            collaborationMode: 'default',
+          }],
+        }),
+        __codexGlobalStateForTests.writeAutomationSchedulerState({
+          'automation-1': { lastQueuedAtMs: 1_800_000_000_000 },
+        }),
+      ])
+
+      const rawState = JSON.parse(await readFile(join(codexHome, '.codex-global-state.json'), 'utf8')) as Record<string, unknown>
+      expect(rawState['thread-queue-state']).toEqual({
+        'thread-1': [{
+          id: 'queued-1',
+          text: 'queued message',
+          imageUrls: [],
+          skills: [],
+          fileAttachments: [],
+          collaborationMode: 'default',
+        }],
+      })
+      expect(rawState['automation-scheduler-state']).toEqual({
+        'automation-1': { lastQueuedAtMs: 1_800_000_000_000 },
       })
     } finally {
       await rm(codexHome, { recursive: true, force: true })
