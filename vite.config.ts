@@ -1,7 +1,8 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { createCodexBridgeMiddleware } from "./src/server/codexAppServerBridge";
-import { createDirectoryListingHtml, createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from "./src/server/localBrowseUi";
+import { createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from "./src/server/localBrowseUi";
+import { createLocalBrowseResponse } from "./src/server/localBrowseRoute";
 import tailwindcss from "@tailwindcss/vite";
 import { spawnSync } from "node:child_process";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
@@ -274,38 +275,29 @@ export default defineConfig({
 
           const localPath = decodeBrowsePath(url.pathname.slice("/codex-local-browse".length));
           const newProjectName = url.searchParams.get("newProjectName") ?? "";
-          if (!localPath || !isAbsolute(localPath)) {
-            res.statusCode = 400;
-            res.setHeader("Content-Type", "application/json");
-            res.end(JSON.stringify({ error: "Expected absolute local file path." }));
+          const response = await createLocalBrowseResponse({ localPath, searchParams: url.searchParams, newProjectName });
+          res.statusCode = response.status;
+          Object.entries(response.headers).forEach(([key, value]) => res.setHeader(key, value));
+          if (response.kind === "json") {
+            res.end(JSON.stringify(response.body));
             return;
           }
-
-          try {
-            const fileStat = await stat(localPath);
-            res.setHeader("Cache-Control", "private, no-store");
-            if (fileStat.isDirectory()) {
-              const html = await createDirectoryListingHtml(localPath, { newProjectName });
-              res.statusCode = 200;
-              res.setHeader("Content-Type", "text/html; charset=utf-8");
-              res.end(html);
-              return;
-            }
-
-            res.statusCode = 200;
-            const stream = createReadStream(localPath);
-            stream.on("error", () => {
-              if (res.headersSent) return;
-              res.statusCode = 404;
-              res.setHeader("Content-Type", "application/json");
-              res.end(JSON.stringify({ error: "File not found." }));
-            });
-            stream.pipe(res);
-          } catch {
+          if (response.kind === "html") {
+            res.end(req.method === "HEAD" ? "" : response.body);
+            return;
+          }
+          if (req.method === "HEAD") {
+            res.end();
+            return;
+          }
+          const stream = createReadStream(response.filePath);
+          stream.on("error", () => {
+            if (res.headersSent) return;
             res.statusCode = 404;
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ error: "File not found." }));
-          }
+          });
+          stream.pipe(res);
         });
         server.middlewares.use(async (req, res, next) => {
           if (!req.url || (req.method !== "GET" && req.method !== "HEAD")) return next();

@@ -7,7 +7,8 @@ import { gzipSync } from 'node:zlib'
 import express, { type Express, type NextFunction, type Request, type Response } from 'express'
 import { createCodexBridgeMiddleware } from './codexAppServerBridge.js'
 import { createAuthSession } from './authMiddleware.js'
-import { createDirectoryListingHtml, createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from './localBrowseUi.js'
+import { createTextEditorHtml, decodeBrowsePath, getLocalDirectoryListing, isTextEditableFile, normalizeLocalPath } from './localBrowseUi.js'
+import { createLocalBrowseResponse } from './localBrowseRoute.js'
 import { acceptsGzipEncoding } from './httpResponse.js'
 import { WebSocketServer, type WebSocket } from 'ws'
 
@@ -268,27 +269,25 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
     const rawPath = readWildcardPathParam(req.params.path)
     const localPath = decodeBrowsePath(`/${rawPath}`)
     const newProjectName = typeof req.query.newProjectName === 'string' ? req.query.newProjectName : ''
-    if (!localPath || !isAbsolute(localPath)) {
-      res.status(400).json({ error: 'Expected absolute local file path.' })
+    const searchParams = new URLSearchParams()
+    Object.entries(req.query).forEach(([key, value]) => {
+      if (typeof value === 'string') searchParams.set(key, value)
+    })
+    const response = await createLocalBrowseResponse({ localPath, searchParams, newProjectName })
+    Object.entries(response.headers).forEach(([key, value]) => res.setHeader(key, value))
+    res.status(response.status)
+    if (response.kind === 'json') {
+      res.json(response.body)
       return
     }
-
-    try {
-      const fileStat = await stat(localPath)
-      res.setHeader('Cache-Control', 'private, no-store')
-      if (fileStat.isDirectory()) {
-        const html = await createDirectoryListingHtml(localPath, { newProjectName })
-        res.status(200).type('text/html; charset=utf-8').send(html)
-        return
-      }
-
-      res.sendFile(localPath, { dotfiles: 'allow' }, (error) => {
-        if (!error) return
-        if (!res.headersSent) res.status(404).json({ error: 'File not found.' })
-      })
-    } catch {
-      res.status(404).json({ error: 'File not found.' })
+    if (response.kind === 'html') {
+      res.type('text/html; charset=utf-8').send(response.body)
+      return
     }
+    res.sendFile(response.filePath, { dotfiles: 'allow' }, (error) => {
+      if (!error) return
+      if (!res.headersSent) res.status(404).json({ error: 'File not found.' })
+    })
   })
 
   // 7. Edit text-like local files.

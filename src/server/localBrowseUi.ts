@@ -118,7 +118,7 @@ export async function isTextEditableFile(localPath: string): Promise<boolean> {
   }
 }
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/gu, '&amp;')
     .replace(/</gu, '&lt;')
@@ -127,23 +127,31 @@ function escapeHtml(value: string): string {
     .replace(/'/gu, '&#39;')
 }
 
-function normalizeNewProjectName(value: string): string {
+export function normalizeNewProjectName(value: string): string {
   return value.trim().replace(/[\\/]+/gu, '').trim()
 }
 
-function toBrowseHref(pathValue: string, newProjectName = ''): string {
-  const normalizedName = normalizeNewProjectName(newProjectName)
-  const query = normalizedName ? `?newProjectName=${encodeURIComponent(normalizedName)}` : ''
-  return `/codex-local-browse${encodeURI(pathValue)}${query}`
+function encodeLocalPathForRoute(pathValue: string): string {
+  return pathValue
+    .replace(/\\/gu, '/')
+    .split('/')
+    .map((segment, index) => index === 0 && segment === '' ? '' : encodeURIComponent(segment))
+    .join('/')
 }
 
-function toEditHref(pathValue: string, newProjectName = ''): string {
+export function toBrowseHref(pathValue: string, newProjectName = ''): string {
   const normalizedName = normalizeNewProjectName(newProjectName)
   const query = normalizedName ? `?newProjectName=${encodeURIComponent(normalizedName)}` : ''
-  return `/codex-local-edit${encodeURI(pathValue)}${query}`
+  return `/codex-local-browse${encodeLocalPathForRoute(pathValue)}${query}`
 }
 
-function escapeForInlineScriptString(value: string): string {
+export function toEditHref(pathValue: string, newProjectName = ''): string {
+  const normalizedName = normalizeNewProjectName(newProjectName)
+  const query = normalizedName ? `?newProjectName=${encodeURIComponent(normalizedName)}` : ''
+  return `/codex-local-edit${encodeLocalPathForRoute(pathValue)}${query}`
+}
+
+export function escapeForInlineScriptString(value: string): string {
   // Prevent breaking out of inline <script> blocks when file content contains HTML/script tokens.
   return JSON.stringify(value)
     .replace(/<\//gu, '<\\/')

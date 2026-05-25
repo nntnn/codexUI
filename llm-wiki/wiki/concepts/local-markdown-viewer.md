@@ -9,6 +9,7 @@ shape is a standalone server-rendered HTML viewer for markdown files opened via
 
 Source:
 - [Local markdown viewer attachment review](../../raw/features/local-markdown-viewer-attachment-review.md)
+- [Local markdown viewer implementation](../../raw/features/local-markdown-viewer-implementation.md)
 
 ## Recommended Attachment Point
 
@@ -20,8 +21,10 @@ Use the server-owned local browse route:
   `createDirectoryListingHtml`.
 - It already serves editable text files through `/codex-local-edit/*path`.
 
-The smallest implementation is to add a markdown file extension check before
-raw `sendFile` and return `createMarkdownViewerHtml(localPath)`.
+The implementation should centralize the browse decision in a shared server
+module so production `httpServer.ts` and Vite dev middleware do not drift. The
+viewer HTML and markdown parsing should live in a pure server module separate
+from directory and editor HTML.
 
 This keeps existing links stable. A link such as
 `/codex-local-browse/home/user/project/README.md` can start showing the viewer
@@ -74,7 +77,11 @@ The viewer should behave like a document tab:
 - code fences highlighted consistently with current app code blocks
 
 For local file links and images inside markdown, resolve relative paths against
-the markdown file directory unless a stronger product decision says otherwise.
+the markdown file directory. Clicked links can navigate through the existing
+authenticated local browse route. Auto-rendered local images are stricter:
+only `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp` may render, and only when the
+resolved path stays inside the markdown file directory tree. SVG and external
+images are not auto-embedded in v1.
 
 ## Constraints
 
@@ -82,6 +89,12 @@ the markdown file directory unless a stronger product decision says otherwise.
 - Keep absolute path validation in the server route.
 - Escape markdown-rendered HTML by default.
 - Do not render raw HTML from markdown unless a sanitizer is deliberately added.
+- Use allowlist-based URL handling. Escaping alone does not make
+  `javascript:` or `data:` hrefs safe.
+- Bound markdown preview reads to 1 MiB plus one byte instead of relying on
+  `stat` as the final guard.
+- Add CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  and `Cache-Control: private, no-store` on viewer HTML responses.
 - Preserve directory browse and non-markdown raw file behavior.
 - Keep `.md` editable through `/codex-local-edit/*path`.
 - Treat `.mdx` as an explicit product decision, because markdown-only rendering
@@ -102,3 +115,6 @@ When implemented, verify:
 - light and dark themes are readable.
 - mobile and desktop layouts are usable.
 - large markdown files do not cause unbounded parse or highlight work.
+- Vite dev middleware and production server route render markdown with the same
+  route decision logic.
+- hostile markdown links render inert and do not emit executable `href` values.
