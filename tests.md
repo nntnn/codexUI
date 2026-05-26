@@ -5044,6 +5044,7 @@ Local markdown files opened through `/codex-local-browse/*` render in a mobile-f
 8. Repeat viewer checks at desktop width, 768x1024, and 375x812.
 9. Switch to dark theme and repeat steps 1-8.
 10. In TestChat, send a message containing a local markdown link, confirm the rendered message still contains `a.message-file-link`, click it, and confirm it opens the new viewer.
+11. When opening the viewer with `newProjectName=<name>`, click a relative markdown link inside the document and confirm the query is preserved on the next browse page.
 
 #### Expected Results
 - Markdown files render as standalone viewer HTML by default.
@@ -5052,6 +5053,8 @@ Local markdown files opened through `/codex-local-browse/*` render in a mobile-f
 - Toolbar controls are visible, keyboard-focusable, and at least 44 px on mobile.
 - Hostile markdown links do not produce executable `href` values.
 - Relative local images do not auto-load outside the markdown file directory tree.
+- Markdown-like non-regular paths, such as symlinks to device files, are rejected instead of preview-read.
+- Project-picker context is preserved across toolbar links and rendered local markdown links.
 - Light and dark theme rendering is readable on desktop, tablet, and mobile.
 - Existing TestChat file-link parsing continues to route through `/codex-local-browse`.
 

@@ -70,6 +70,7 @@ describe('local markdown viewer renderer', () => {
     expect(safeMarkdownHref('mailto:test@example.com', localPath)).toMatchObject({ external: false })
     expect(safeMarkdownHref('#section-1', localPath)).toMatchObject({ html: '#section-1' })
     expect(safeMarkdownHref('guide/intro.md', localPath)?.html).toBe('/codex-local-browse/tmp/docs/guide/intro.md')
+    expect(safeMarkdownHref('guide/intro.md', localPath, 'Draft Project')?.html).toBe('/codex-local-browse/tmp/docs/guide/intro.md?newProjectName=Draft%20Project')
     expect(safeMarkdownHref('guide/intro.md#usage', localPath)?.html).toBe('/codex-local-browse/tmp/docs/guide/intro.md#usage')
     expect(safeMarkdownHref('My%20Guide.md', localPath)?.html).toBe('/codex-local-browse/tmp/docs/My%20Guide.md')
     expect(safeMarkdownHref('docs/ADR_(final).md', localPath)?.html).toBe('/codex-local-browse/tmp/docs/docs/ADR_(final).md')
@@ -139,7 +140,7 @@ describe('local markdown viewer renderer', () => {
     const html = createMarkdownViewerHtml({
       localPath: '/tmp/docs/readme.md',
       nonce: 'abc123',
-      markdown: 'Hello [safe](https://example.com) [bad](javascript:alert(1))',
+      markdown: 'Hello [safe](https://example.com) [local](guide.md) [bad](javascript:alert(1))',
       newProjectName: 'Draft Project',
     })
 
@@ -151,6 +152,7 @@ describe('local markdown viewer renderer', () => {
     expect(html).toContain('Raw</a>')
     expect(html).toContain('/codex-local-browse/tmp/docs?newProjectName=Draft%20Project')
     expect(html).toContain('/codex-local-browse/tmp/docs/readme.md?newProjectName=Draft%20Project&amp;raw=1')
+    expect(html).toContain('/codex-local-browse/tmp/docs/guide.md?newProjectName=Draft%20Project')
     expect(html).toContain('/codex-local-edit/tmp/docs/readme.md?newProjectName=Draft%20Project')
     expect(html).toContain('target="_blank" rel="noopener noreferrer"')
     expect(html).toContain('[bad](javascript:alert(1))')

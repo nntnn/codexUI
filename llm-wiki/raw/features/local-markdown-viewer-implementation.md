@@ -13,6 +13,7 @@ Captured: 2026-05-25
 - The route preserves raw markdown behavior when `raw=1` is present.
 - `.mdx` is not auto-rendered by the markdown viewer.
 - Preview reads are bounded to 1 MiB plus one byte, preventing unbounded `readFile` behavior.
+- Markdown-like paths must be regular files before preview reads, so devices, FIFOs, and symlink-to-device paths are rejected instead of opened by the renderer.
 - Viewer HTML adds CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and `Cache-Control: private, no-store`.
 - Link rewriting is allowlist-based. Dangerous protocols such as `javascript:`, `data:`, `vbscript:`, protocol-relative URLs, malformed URLs, and control-character-prefixed URLs are rendered inert.
 - Relative local images auto-render only for `.png`, `.jpg`, `.jpeg`, `.gif`, and `.webp` when the resolved path stays inside the markdown file directory tree.

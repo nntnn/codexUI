@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -118,6 +118,18 @@ describe('createLocalBrowseResponse', () => {
     expect(textFile).toMatchObject({ kind: 'file', status: 200, filePath: txtPath })
   })
 
+  it('does not preview non-regular markdown-like paths', async () => {
+    const dir = await createTempDir()
+    const specialPath = join(dir, 'device.md')
+    await symlink('/dev/zero', specialPath)
+
+    const response = await createLocalBrowseResponse({ localPath: specialPath, searchParams: new URLSearchParams() })
+
+    expect(response.kind).toBe('json')
+    expect(response.status).toBe(400)
+    if (response.kind === 'json') expect(response.body.error).toBe('Expected file path.')
+  })
+
   it('returns recovery shells for oversized, missing, and renderable empty markdown states', async () => {
     const dir = await createTempDir()
     const oversizedPath = join(dir, 'big.md')
@@ -155,7 +167,7 @@ describe('createLocalBrowseResponse', () => {
     })
 
     expect(response.kind).toBe('html')
-    expect(response.status).toBe(500)
+    expect(response.status).toBe(200)
     if (response.kind === 'html') {
       expect(response.body).toContain('Preview failed')
       expect(response.body).not.toContain('forced render failure')

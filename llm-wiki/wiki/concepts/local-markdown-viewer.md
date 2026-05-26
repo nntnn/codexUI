@@ -93,6 +93,8 @@ images are not auto-embedded in v1.
   `javascript:` or `data:` hrefs safe.
 - Bound markdown preview reads to 1 MiB plus one byte instead of relying on
   `stat` as the final guard.
+- Require regular files before preview reads so special local paths do not
+  block or stream device data through the viewer.
 - Add CSP, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   and `Cache-Control: private, no-store` on viewer HTML responses.
 - Preserve directory browse and non-markdown raw file behavior.

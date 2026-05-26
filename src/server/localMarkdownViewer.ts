@@ -24,14 +24,16 @@ type SafeHrefResult = {
 
 type RenderContext = {
   localPath: string
+  newProjectName: string
   localImageChecks: number
   realBaseDir?: string | null
   imageRealpathCache: Map<string, string | null>
 }
 
-function createRenderContext(localPath: string): RenderContext {
+function createRenderContext(localPath: string, newProjectName = ''): RenderContext {
   return {
     localPath,
+    newProjectName,
     localImageChecks: 0,
     imageRealpathCache: new Map(),
   }
@@ -95,7 +97,7 @@ export function isMarkdownViewerPath(localPath: string): boolean {
   return extension === '.md' || extension === '.markdown'
 }
 
-export function safeMarkdownHref(rawHref: string, localPath: string): SafeHrefResult | null {
+export function safeMarkdownHref(rawHref: string, localPath: string, newProjectName = ''): SafeHrefResult | null {
   const trimmed = stripControls(rawHref.trim())
   if (!trimmed) return null
   if (trimmed.startsWith('//')) return null
@@ -129,7 +131,7 @@ export function safeMarkdownHref(rawHref: string, localPath: string): SafeHrefRe
   if (!decodedPath) return null
   const resolved = resolveLocalReference(decodedPath, localPath)
   const fragment = splitHref.fragment ? `#${encodeURIComponent(splitHref.fragment)}` : ''
-  return { html: escapeHtml(`${toBrowseHref(resolved)}${fragment}`), external: false }
+  return { html: escapeHtml(`${toBrowseHref(resolved, newProjectName)}${fragment}`), external: false }
 }
 
 export function safeMarkdownImageSrc(rawSrc: string, localPath: string, context?: RenderContext): string | null {
@@ -202,7 +204,7 @@ function renderInline(value: string, context: RenderContext): string {
   })
 
   rendered = rendered.replace(/\[([^\]]+)\]\(((?:[^()\s]+|\([^()]*\))+)(?:\s+"[^"]*")?\)/gu, (match, label: string, href: string) => {
-    const safeHref = safeMarkdownHref(href, context.localPath)
+    const safeHref = safeMarkdownHref(href, context.localPath, context.newProjectName)
     if (!safeHref) return match
     const targetAttrs = safeHref.external ? ' target="_blank" rel="noopener noreferrer"' : ''
     return htmlToken(`<a href="${safeHref.html}"${targetAttrs}>${renderInline(label, context)}</a>`)
@@ -289,7 +291,7 @@ function createHeadingId(rawHeading: string, counts: Map<string, number>): strin
   return count === 0 ? base : `${base}-${count + 1}`
 }
 
-export function renderMarkdownDocument(markdown: string, options: { localPath: string }, context = createRenderContext(options.localPath)): { html: string, hasH1: boolean } {
+export function renderMarkdownDocument(markdown: string, options: { localPath: string, newProjectName?: string }, context = createRenderContext(options.localPath, options.newProjectName ?? '')): { html: string, hasH1: boolean } {
   const lines = markdown.replace(/\r\n?/gu, '\n').split('\n')
   const blocks: string[] = []
   const headingCounts = new Map<string, number>()
@@ -411,7 +413,7 @@ export function createMarkdownViewerHtml(options: ViewerOptions): string {
     if (!markdown.trim()) {
       articleHtml = `<section class="markdown-viewer-state"><h1>${escapeHtml(createStateMessage('empty'))}</h1><p>${escapeHtml(options.localPath)}</p></section>`
     } else {
-      const rendered = renderMarkdownDocument(markdown, { localPath: options.localPath })
+      const rendered = renderMarkdownDocument(markdown, { localPath: options.localPath, newProjectName })
       articleHtml = `${rendered.hasH1 ? '' : `<h1>${escapeHtml(filename)}</h1>`}${rendered.html}`
     }
   }

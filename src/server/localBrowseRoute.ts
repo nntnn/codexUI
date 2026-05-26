@@ -107,6 +107,9 @@ export async function createLocalBrowseResponse(options: LocalBrowseRequestOptio
       const html = await createDirectoryListingHtml(localPath, { newProjectName: options.newProjectName ?? '' })
       return htmlResponse(200, html)
     }
+    if (!fileStat.isFile()) {
+      return jsonResponse(400, 'Expected file path.')
+    }
 
     if (!isMarkdownViewerPath(localPath) || searchParams.get('raw') === '1') {
       return {
@@ -131,7 +134,7 @@ export async function createLocalBrowseResponse(options: LocalBrowseRequestOptio
       return htmlResponse(200, renderViewerHtml({ localPath, nonce, markdown: readResult.content, newProjectName: options.newProjectName }), nonce)
     } catch (error) {
       console.error('Failed to render markdown viewer', error)
-      return htmlResponse(500, createMarkdownViewerHtml({ localPath, nonce, state: 'render-failed', newProjectName: options.newProjectName }), nonce)
+      return htmlResponse(200, createMarkdownViewerHtml({ localPath, nonce, state: 'render-failed', newProjectName: options.newProjectName }), nonce)
     }
   } catch {
     if (isMarkdownViewerPath(localPath)) {
