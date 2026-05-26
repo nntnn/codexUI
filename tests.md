@@ -5019,3 +5019,44 @@ The sidebar Chats section lists the first 10 projectless chats, offers Show more
 
 #### Rollback/Cleanup
 - None.
+
+---
+
+### Local markdown browse viewer
+
+#### Feature/Change Name
+Local markdown files opened through `/codex-local-browse/*` render in a mobile-friendly Codex markdown viewer while raw, directory, and non-markdown browse behavior remains available.
+
+#### Prerequisites/Setup
+1. Dev server running with `pnpm run dev --host 127.0.0.1 --port 4173`
+2. A local markdown file containing a heading, paragraph, task list, code fence, simple table, relative markdown link, safe local image, and a hostile link such as `[bad](javascript:alert(1))`
+3. A non-markdown local file in the same folder
+4. Light theme and dark theme verification available through OS color-scheme emulation or browser tooling
+
+#### Steps
+1. In light theme, open `/codex-local-browse/<absolute-path-to-file>.md`.
+2. Confirm the page renders the markdown viewer shell with a sticky toolbar, Back, Raw, Edit, Copy path, and Reload.
+3. Confirm markdown content renders with readable typography, escaped raw HTML, inert hostile links, horizontally scrollable code/table blocks, and no page-level horizontal overflow.
+4. Click Raw and confirm the same file opens as raw markdown with `raw=1`.
+5. Click Edit and confirm `/codex-local-edit/*` opens for the same file.
+6. Open the parent folder through `/codex-local-browse/<absolute-folder-path>` and confirm the directory listing still works.
+7. Open the non-markdown file through `/codex-local-browse/<absolute-non-md-path>` and confirm raw file behavior still works.
+8. Repeat viewer checks at desktop width, 768x1024, and 375x812.
+9. Switch to dark theme and repeat steps 1-8.
+10. In TestChat, send a message containing a local markdown link, confirm the rendered message still contains `a.message-file-link`, click it, and confirm it opens the new viewer.
+11. When opening the viewer with `newProjectName=<name>`, click a relative markdown link inside the document and confirm the query is preserved on the next browse page.
+
+#### Expected Results
+- Markdown files render as standalone viewer HTML by default.
+- `raw=1` preserves raw markdown behavior.
+- Directory listings and non-markdown file browsing are unchanged.
+- Toolbar controls are visible, keyboard-focusable, and at least 44 px on mobile.
+- Hostile markdown links do not produce executable `href` values.
+- Relative local images do not auto-load outside the markdown file directory tree.
+- Markdown-like non-regular paths, such as symlinks to device files, are rejected instead of preview-read.
+- Project-picker context is preserved across toolbar links and rendered local markdown links.
+- Light and dark theme rendering is readable on desktop, tablet, and mobile.
+- Existing TestChat file-link parsing continues to route through `/codex-local-browse`.
+
+#### Rollback/Cleanup
+- Remove disposable markdown/image fixtures and TestChat messages created for the validation.

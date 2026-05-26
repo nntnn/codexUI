@@ -1,5 +1,11 @@
 # Log
 
+## [2026-05-25] ingest | local markdown viewer implementation
+- Added source: `raw/features/local-markdown-viewer-implementation.md`.
+- Updated wiki page: `concepts/local-markdown-viewer.md`.
+- Documents: shared production/Vite browse route decision, server-only markdown renderer, raw bypass, 1 MiB bounded read, CSP/security headers, hostile link policy, local image confinement, and verification obligations.
+- Updated `index.md`.
+
 ## [2026-05-23] ingest | local markdown viewer attachment review
 - Added source: `raw/features/local-markdown-viewer-attachment-review.md`.
 - Created wiki page: `concepts/local-markdown-viewer.md`.
